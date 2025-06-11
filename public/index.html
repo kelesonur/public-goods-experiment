@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kamusal Mal Oyunu - Ekonomi Deneyi</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1>🎯 Kamusal Mal Oyunu</h1>
+            <p class="subtitle">Ekonomik Karar Verme Deneyi</p>
+        </header>
+
+        <!-- Welcome Screen -->
+        <div id="welcome-screen" class="screen active">
+            <div class="card">
+                <h2>Deneye Hoş Geldiniz!</h2>
+                <p>Bu deney, grup içindeki ekonomik karar verme süreçlerini inceler. Deney yaklaşık 10-15 dakika sürecektir.</p>
+                <div class="info-box">
+                    <h3>🎮 Oyun Kuralları:</h3>
+                    <ul>
+                        <li>4 kişilik gruplar halinde oynayacaksınız</li>
+                        <li>Her oyuncu 20 TL ile başlayacak</li>
+                        <li>Gruba ne kadar katkıda bulunacağınıza karar vereceksiniz</li>
+                        <li>Tüm katkılar ikiye katlanıp eşit olarak paylaşılacak</li>
+                    </ul>
+                </div>
+                
+                <div class="form-group">
+                    <label for="participant-name">Katılımcı Adı (isteğe bağlı):</label>
+                    <input type="text" id="participant-name" placeholder="Adınızı giriniz">
+                </div>
+                
+                <button id="join-btn" class="btn btn-primary">Oyuna Katıl</button>
+            </div>
+        </div>
+
+        <!-- Waiting Screen -->
+        <div id="waiting-screen" class="screen">
+            <div class="card">
+                <h2>🔄 Diğer Oyuncular Bekleniyor...</h2>
+                <div class="player-counter">
+                    <span id="current-players">1</span> / 4 oyuncu
+                </div>
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <p>Lütfen bekleyin, diğer oyuncular katılıyor...</p>
+                </div>
+                <div class="room-info">
+                    <p><strong>Oda ID:</strong> <span id="room-id">-</span></p>
+                    <p><strong>Oyuncu Numarası:</strong> <span id="player-number">-</span></p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Instructions Screen -->
+        <div id="instructions-screen" class="screen">
+            <div class="card">
+                <h2>📋 Oyun Talimatları</h2>
+                <div class="instructions-content">
+                    <div class="instruction-item">
+                        <h3>🎯 Amaç</h3>
+                        <p>4 kişilik grubunuzda, 20 TL'nizin ne kadarını grup kasasına katkı olarak verebileceğinize karar vereceksiniz.</p>
+                    </div>
+                    
+                    <div class="instruction-item">
+                        <h3>💰 Nasıl Çalışır?</h3>
+                        <ol>
+                            <li>Her oyuncu 20 TL ile başlar</li>
+                            <li>0-20 TL arası herhangi bir miktarı gruba katkı olarak verebilirsiniz</li>
+                            <li>Gruba verdiğiniz miktar, cebinizden çıkar</li>
+                            <li>Tüm oyuncuların katkıları toplanır ve 2 ile çarpılır</li>
+                            <li>Bu toplam miktar 4 oyuncu arasında eşit olarak paylaşılır</li>
+                            <li>Final kazancınız = Cebinizde kalan + Size düşen pay</li>
+                        </ol>
+                    </div>
+
+                    <div class="example-box">
+                        <h3>📝 Örnek:</h3>
+                        <p>Diyelim ki herkes 10 TL katkıda bulundu:</p>
+                        <ul>
+                            <li>Toplam katkı: 4 × 10 = 40 TL</li>
+                            <li>İkiye katlanmış: 40 × 2 = 80 TL</li>
+                            <li>Herkesin payı: 80 ÷ 4 = 20 TL</li>
+                            <li>Sizin kazancınız: 10 TL (cebinizde kalan) + 20 TL (payınız) = 30 TL</li>
+                        </ul>
+                    </div>
+                </div>
+                
+                <button id="start-game-btn" class="btn btn-primary">Oyunu Başlat</button>
+            </div>
+        </div>
+
+        <!-- Contribution Screen -->
+        <div id="contribution-screen" class="screen">
+            <div class="card">
+                <h2>💵 Katkı Kararınız</h2>
+                <div class="contribution-interface">
+                    <div class="money-display">
+                        <div class="starting-amount">
+                            <h3>Başlangıç Miktarınız</h3>
+                            <div class="amount">20 TL</div>
+                        </div>
+                    </div>
+
+                    <div class="contribution-selector">
+                        <label for="contribution-amount">Gruba katkınız (0-20 TL):</label>
+                        <div class="slider-container">
+                            <input type="range" id="contribution-slider" min="0" max="20" step="1" value="10">
+                            <div class="slider-labels">
+                                <span>0 TL</span>
+                                <span>20 TL</span>
+                            </div>
+                        </div>
+                        <div class="contribution-display">
+                            <div class="contribution-amount">
+                                <span id="contribution-value">10</span> TL
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="calculation-preview">
+                        <div class="calc-item">
+                            <span>Katkınız:</span>
+                            <span id="preview-contribution">10 TL</span>
+                        </div>
+                        <div class="calc-item">
+                            <span>Cebinizde kalacak:</span>
+                            <span id="preview-remaining">10 TL</span>
+                        </div>
+                    </div>
+
+                    <div class="timer-display">
+                        <span>⏱️ Karar süreniz ölçülüyor...</span>
+                    </div>
+                </div>
+                
+                <button id="submit-contribution-btn" class="btn btn-primary">Kararımı Onayla</button>
+            </div>
+        </div>
+
+        <!-- Waiting for Others Screen -->
+        <div id="waiting-others-screen" class="screen">
+            <div class="card">
+                <h2>⏳ Diğer Oyuncular Karar Veriyor...</h2>
+                <div class="waiting-info">
+                    <div class="progress-display">
+                        <span id="completed-players">1</span> / 4 oyuncu kararını verdi
+                    </div>
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        <p>Lütfen bekleyin...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Comprehension Screen -->
+        <div id="comprehension-screen" class="screen">
+            <div class="card">
+                <h2>🧠 Anlama Soruları</h2>
+                <p>Lütfen aşağıdaki soruları cevaplayın:</p>
+                
+                <div class="question-group">
+                    <div class="question">
+                        <h3>Soru 1:</h3>
+                        <p>Grubun toplam kazancını maksimize etmek için her oyuncu ne kadar katkıda bulunmalı?</p>
+                        <div class="radio-group">
+                            <label><input type="radio" name="q1" value="0"> 0 TL</label>
+                            <label><input type="radio" name="q1" value="10"> 10 TL</label>
+                            <label><input type="radio" name="q1" value="20"> 20 TL</label>
+                            <label><input type="radio" name="q1" value="5"> 5 TL</label>
+                        </div>
+                    </div>
+
+                    <div class="question">
+                        <h3>Soru 2:</h3>
+                        <p>Kişisel kazancınızı maksimize etmek için (diğer oyuncuların katkısı sabitken) ne kadar katkıda bulunmalısınız?</p>
+                        <div class="radio-group">
+                            <label><input type="radio" name="q2" value="0"> 0 TL</label>
+                            <label><input type="radio" name="q2" value="10"> 10 TL</label>
+                            <label><input type="radio" name="q2" value="20"> 20 TL</label>
+                            <label><input type="radio" name="q2" value="5"> 5 TL</label>
+                        </div>
+                    </div>
+                </div>
+                
+                <button id="submit-comprehension-btn" class="btn btn-primary">Cevapları Gönder</button>
+            </div>
+        </div>
+
+        <!-- Results Screen -->
+        <div id="results-screen" class="screen">
+            <div class="card">
+                <h2>🎉 Oyun Sonuçları</h2>
+                <div class="results-content">
+                    <div class="result-summary">
+                        <h3>Sizin Sonuçlarınız:</h3>
+                        <div class="result-item">
+                            <span>Katkınız:</span>
+                            <span id="result-contribution">- TL</span>
+                        </div>
+                        <div class="result-item">
+                            <span>Cebinizde kalan:</span>
+                            <span id="result-kept">- TL</span>
+                        </div>
+                        <div class="result-item">
+                            <span>Size düşen pay:</span>
+                            <span id="result-share">- TL</span>
+                        </div>
+                        <div class="result-item total">
+                            <span>Toplam kazancınız:</span>
+                            <span id="result-total">- TL</span>
+                        </div>
+                    </div>
+
+                    <div class="group-summary">
+                        <h3>Grup Sonuçları:</h3>
+                        <div class="result-item">
+                            <span>Grup toplam katkısı:</span>
+                            <span id="group-total-contribution">- TL</span>
+                        </div>
+                        <div class="result-item">
+                            <span>İkiye katlanmış havuz:</span>
+                            <span id="group-doubled-pool">- TL</span>
+                        </div>
+                    </div>
+
+                    <div class="all-contributions">
+                        <h3>Tüm Oyuncu Katkıları:</h3>
+                        <div id="all-contributions-list">
+                            <!-- Will be populated by JavaScript -->
+                        </div>
+                    </div>
+                </div>
+                
+                <button id="continue-to-demo-btn" class="btn btn-primary">Demografik Bilgilere Geç</button>
+            </div>
+        </div>
+
+        <!-- Demographics Screen -->
+        <div id="demographics-screen" class="screen">
+            <div class="card">
+                <h2>📋 Demografik Bilgiler</h2>
+                <p>Son olarak, araştırma için bazı demografik bilgiler rica ediyoruz:</p>
+                
+                <div class="form-group">
+                    <label for="age">Yaşınız:</label>
+                    <input type="number" id="age" min="18" max="100" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="gender">Cinsiyetiniz:</label>
+                    <select id="gender" required>
+                        <option value="">Seçiniz...</option>
+                        <option value="kadın">Kadın</option>
+                        <option value="erkek">Erkek</option>
+                        <option value="diğer">Diğer</option>
+                        <option value="belirtmek_istemiyorum">Belirtmek istemiyorum</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="major">Bölümünüz/Ana dalınız:</label>
+                    <input type="text" id="major" placeholder="Örn: İktisat, İşletme, Psikoloji" required>
+                </div>
+                
+                <button id="submit-demographics-btn" class="btn btn-primary">Deneyi Tamamla</button>
+            </div>
+        </div>
+
+        <!-- Final Screen -->
+        <div id="final-screen" class="screen">
+            <div class="card text-center">
+                <h2>✅ Deney Tamamlandı!</h2>
+                <div class="success-message">
+                    <p>Katılımınız için çok teşekkürler!</p>
+                    <p>Verdiğiniz katkı bilimsel araştırmamız için çok değerli.</p>
+                </div>
+                
+                <div class="experiment-info">
+                    <h3>Bu Deney Hakkında:</h3>
+                    <p>Bu deney, David G. Rand, Joshua D. Greene ve Martin A. Nowak'ın "Spontaneous giving and calculated greed" çalışmasına dayanmaktadır.</p>
+                    <p>Karar verme süreniz ve tercihleriniz arasındaki ilişki incelenmektedir.</p>
+                </div>
+                
+                <button class="btn btn-secondary" onclick="window.location.reload()">Yeni Deney Başlat</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="script.js"></script>
+</body>
+</html> 

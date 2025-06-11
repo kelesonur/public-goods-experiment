@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deney Yönetici Paneli</title>
+    <link rel="stylesheet" href="styles.css">
+    <style>
+        .admin-panel {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .stat-card {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        
+        .stat-number {
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+        
+        .stat-label {
+            color: #4a5568;
+            font-weight: 500;
+        }
+        
+        .data-table {
+            background: white;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        
+        .table-header {
+            background: #667eea;
+            color: white;
+            padding: 20px;
+            font-weight: 600;
+        }
+        
+        .table-content {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        
+        th {
+            background: #f7fafc;
+            font-weight: 600;
+            position: sticky;
+            top: 0;
+        }
+        
+        .export-buttons {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .btn-small {
+            padding: 8px 16px;
+            font-size: 0.9rem;
+        }
+        
+        .refresh-indicator {
+            color: #48bb78;
+            font-weight: 500;
+        }
+    </style>
+</head>
+<body>
+    <div class="admin-panel">
+        <header class="header">
+            <h1>📊 Deney Yönetici Paneli</h1>
+            <p class="subtitle">Kamusal Mal Oyunu - Gerçek Zamanlı İzleme</p>
+        </header>
+
+        <div class="export-buttons">
+            <button id="export-json-btn" class="btn btn-small">JSON Export</button>
+            <button id="export-csv-btn" class="btn btn-small">CSV Export</button>
+            <button id="refresh-btn" class="btn btn-secondary btn-small">Yenile</button>
+            <span id="last-refresh" class="refresh-indicator"></span>
+        </div>
+
+        <div class="dashboard-grid">
+            <div class="stat-card">
+                <div class="stat-number" id="total-sessions">-</div>
+                <div class="stat-label">Toplam Oturum</div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-number" id="avg-contribution">-</div>
+                <div class="stat-label">Ortalama Katkı (TL)</div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-number" id="avg-decision-time">-</div>
+                <div class="stat-label">Ortalama Karar Süresi (sn)</div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-number" id="avg-payoff">-</div>
+                <div class="stat-label">Ortalama Kazanç (TL)</div>
+            </div>
+        </div>
+
+        <div class="data-table">
+            <div class="table-header">
+                Son Deney Verileri
+            </div>
+            <div class="table-content">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Tarih</th>
+                            <th>Oyuncu ID</th>
+                            <th>Grup ID</th>
+                            <th>Katkı</th>
+                            <th>Karar Süresi (ms)</th>
+                            <th>Kazanç</th>
+                            <th>Yaş</th>
+                            <th>Cinsiyet</th>
+                            <th>Bölüm</th>
+                        </tr>
+                    </thead>
+                    <tbody id="data-table-body">
+                        <!-- Data will be populated here -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class AdminDashboard {
+            constructor() {
+                this.data = [];
+                this.setupEventListeners();
+                this.loadData();
+                
+                // Auto-refresh every 30 seconds
+                setInterval(() => {
+                    this.loadData();
+                }, 30000);
+            }
+
+            setupEventListeners() {
+                document.getElementById('refresh-btn').addEventListener('click', () => {
+                    this.loadData();
+                });
+
+                document.getElementById('export-json-btn').addEventListener('click', () => {
+                    this.exportJSON();
+                });
+
+                document.getElementById('export-csv-btn').addEventListener('click', () => {
+                    this.exportCSV();
+                });
+            }
+
+            async loadData() {
+                try {
+                    // Load statistics
+                    const statsResponse = await fetch('/api/stats');
+                    const stats = await statsResponse.json();
+                    this.updateStats(stats);
+
+                    // Load session data
+                    const dataResponse = await fetch('/api/export-data');
+                    this.data = await dataResponse.json();
+                    this.updateTable();
+
+                    // Update refresh time
+                    document.getElementById('last-refresh').textContent = 
+                        `Son güncelleme: ${new Date().toLocaleTimeString('tr-TR')}`;
+
+                } catch (error) {
+                    console.error('Veri yüklerken hata:', error);
+                }
+            }
+
+            updateStats(stats) {
+                document.getElementById('total-sessions').textContent = stats.total_sessions || 0;
+                document.getElementById('avg-contribution').textContent = 
+                    stats.avg_contribution ? stats.avg_contribution.toFixed(1) : '-';
+                document.getElementById('avg-decision-time').textContent = 
+                    stats.avg_decision_time ? (stats.avg_decision_time / 1000).toFixed(1) : '-';
+                document.getElementById('avg-payoff').textContent = 
+                    stats.avg_payoff ? stats.avg_payoff.toFixed(1) : '-';
+            }
+
+            updateTable() {
+                const tbody = document.getElementById('data-table-body');
+                tbody.innerHTML = '';
+
+                this.data.slice(0, 50).forEach(session => {
+                    const row = document.createElement('tr');
+                    row.innerHTML = `
+                        <td>${new Date(session.created_at).toLocaleString('tr-TR')}</td>
+                        <td>${session.player_id.substring(0, 8)}...</td>
+                        <td>${session.group_id.substring(0, 8)}...</td>
+                        <td>${session.contribution} TL</td>
+                        <td>${session.decision_time}</td>
+                        <td>${session.payoff ? session.payoff.toFixed(2) : '-'} TL</td>
+                        <td>${session.age || '-'}</td>
+                        <td>${session.gender || '-'}</td>
+                        <td>${session.major || '-'}</td>
+                    `;
+                    tbody.appendChild(row);
+                });
+            }
+
+            exportJSON() {
+                const dataStr = JSON.stringify(this.data, null, 2);
+                const dataBlob = new Blob([dataStr], {type: 'application/json'});
+                
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(dataBlob);
+                link.download = `experiment_data_${new Date().toISOString().split('T')[0]}.json`;
+                link.click();
+            }
+
+            exportCSV() {
+                if (this.data.length === 0) return;
+
+                const headers = Object.keys(this.data[0]);
+                const csvContent = [
+                    headers.join(','),
+                    ...this.data.map(row => 
+                        headers.map(header => 
+                            JSON.stringify(row[header] || '')
+                        ).join(',')
+                    )
+                ].join('\n');
+
+                const dataBlob = new Blob([csvContent], {type: 'text/csv'});
+                
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(dataBlob);
+                link.download = `experiment_data_${new Date().toISOString().split('T')[0]}.csv`;
+                link.click();
+            }
+        }
+
+        // Initialize dashboard when DOM is ready
+        document.addEventListener('DOMContentLoaded', () => {
+            new AdminDashboard();
+        });
+    </script>
+</body>
+</html> 
