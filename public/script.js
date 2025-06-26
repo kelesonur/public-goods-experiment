@@ -383,7 +383,30 @@ function startWaitTimer(minSeconds) {
 // Button event handlers
 document.getElementById('join-btn').addEventListener('click', () => {
     const participantName = document.getElementById('participant-name').value.trim();
-    socket.emit('join-game', { name: participantName });
+    const participantEmail = document.getElementById('participant-email').value.trim();
+    
+    // Validate required fields
+    if (!participantName) {
+        alert('Lütfen adınızı giriniz.');
+        return;
+    }
+    
+    if (!participantEmail) {
+        alert('Lütfen e-posta adresinizi giriniz.');
+        return;
+    }
+    
+    // Basic email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(participantEmail)) {
+        alert('Lütfen geçerli bir e-posta adresi giriniz.');
+        return;
+    }
+    
+    socket.emit('join-game', { 
+        name: participantName,
+        email: participantEmail 
+    });
 });
 
 // Consent form handling
