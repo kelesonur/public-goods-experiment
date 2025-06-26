@@ -180,7 +180,17 @@ class GameRoom {
             const contribution = this.contributions.get(player.id);
             const kept = 10 - contribution; // Each player starts with 10 credits
             const creditsWon = Math.floor(kept + equalShare);
-            const lotteryTickets = Math.floor(creditsWon / 10);
+            // Calculate lottery tickets based on credit ranges
+            let lotteryTickets;
+            if (creditsWon >= 25) {
+                lotteryTickets = 3;
+            } else if (creditsWon >= 15) {
+                lotteryTickets = 2;
+            } else if (creditsWon >= 10) {
+                lotteryTickets = 1;
+            } else {
+                lotteryTickets = 0;
+            }
             
             payoffs.set(player.id, {
                 contribution,
