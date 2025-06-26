@@ -29,15 +29,20 @@ db.serialize(() => {
         player_id TEXT,
         group_id TEXT,
         participant_name TEXT,
+        condition TEXT,
+        consent_given BOOLEAN,
         contribution INTEGER,
         decision_time INTEGER,
-        payoff REAL,
-        comprehension_q1 INTEGER,
-        comprehension_q2 INTEGER,
+        credits_won INTEGER,
+        lottery_tickets INTEGER,
+        comprehension_q1 TEXT,
+        comprehension_q2 TEXT,
         age INTEGER,
         gender TEXT,
         major TEXT,
         instructions_time INTEGER,
+        consent_timestamp DATETIME,
+        demographics_timestamp DATETIME,
         contribution_timestamp DATETIME,
         comprehension_timestamp DATETIME,
         completion_timestamp DATETIME,
@@ -52,6 +57,7 @@ db.serialize(() => {
         id TEXT PRIMARY KEY,
         status TEXT DEFAULT 'waiting',
         total_contribution INTEGER DEFAULT 0,
+        total_credits_distributed INTEGER DEFAULT 0,
         start_time DATETIME,
         end_time DATETIME,
         completion_rate REAL,
@@ -77,11 +83,14 @@ class GameRoom {
     constructor(id) {
         this.id = id;
         this.players = [];
-        this.status = 'waiting'; // waiting, instructions, playing, comprehension, results
+        this.status = 'waiting'; // waiting, consent, demographics, instructions, playing, comprehension, results
+        this.consentGiven = new Map();
+        this.demographics = new Map();
+        this.conditions = new Map(); // 'time_pressure' or 'time_delay'
         this.contributions = new Map();
         this.decisionTimes = new Map();
         this.comprehensionAnswers = new Map();
-        this.demographics = new Map();
+        this.comprehensionCompleted = new Map();
         this.participantNames = new Map();
         this.instructionsTimes = new Map();
         this.timestamps = new Map();
@@ -90,18 +99,41 @@ class GameRoom {
         this.startTime = null;
         this.instructionsStartTime = null;
         this.createdAt = new Date().toISOString();
+        this.readyPlayers = new Set(); // Track who clicked Oyunu Başlat
     }
 
     addPlayer(playerId, socket) {
         if (this.players.length < 4 && this.status === 'waiting') {
             this.players.push({ id: playerId, socket });
+            // Do NOT assign condition here. Wait until group is full.
             return true;
         }
         return false;
     }
 
+    assignBalancedConditions() {
+        // Assign 2 time_pressure and 2 time_delay randomly
+        const shuffled = this.players.map(p => p.id).sort(() => Math.random() - 0.5);
+        for (let i = 0; i < 4; i++) {
+            this.conditions.set(shuffled[i], i < 2 ? 'time_pressure' : 'time_delay');
+        }
+    }
+
     removePlayer(playerId) {
         this.players = this.players.filter(p => p.id !== playerId);
+        this.consentGiven.delete(playerId);
+        this.demographics.delete(playerId);
+        this.conditions.delete(playerId);
+        this.contributions.delete(playerId);
+        this.decisionTimes.delete(playerId);
+        this.comprehensionAnswers.delete(playerId);
+        this.comprehensionCompleted.delete(playerId);
+        this.participantNames.delete(playerId);
+        this.instructionsTimes.delete(playerId);
+        this.timestamps.delete(playerId);
+        this.userAgents.delete(playerId);
+        this.ipAddresses.delete(playerId);
+        
         if (this.players.length === 0) {
             this.status = 'empty';
         }
@@ -111,12 +143,28 @@ class GameRoom {
         return this.players.length === 4;
     }
 
+    allPlayersConsented() {
+        return this.consentGiven.size === 4 && Array.from(this.consentGiven.values()).every(consent => consent);
+    }
+
+    allPlayersDemographicsComplete() {
+        return this.demographics.size === 4;
+    }
+
     allPlayersContributed() {
         return this.contributions.size === 4;
     }
 
     allPlayersAnsweredComprehension() {
-        return this.comprehensionAnswers.size === 4;
+        return this.comprehensionCompleted.size === 4;
+    }
+
+    getConsentedPlayersCount() {
+        return Array.from(this.consentGiven.values()).filter(consent => consent).length;
+    }
+
+    getDemographicsCompletedCount() {
+        return this.demographics.size;
     }
 
     calculatePayoffs() {
@@ -127,13 +175,16 @@ class GameRoom {
         const payoffs = new Map();
         this.players.forEach(player => {
             const contribution = this.contributions.get(player.id);
-            const kept = 20 - contribution; // Each player starts with 20 TL
-            const payoff = kept + equalShare;
+            const kept = 10 - contribution; // Each player starts with 10 credits
+            const creditsWon = Math.floor(kept + equalShare);
+            const lotteryTickets = Math.floor(creditsWon / 10);
+            
             payoffs.set(player.id, {
                 contribution,
                 kept,
                 equalShare,
-                totalPayoff: payoff
+                creditsWon,
+                lotteryTickets
             });
         });
 
@@ -143,6 +194,31 @@ class GameRoom {
     broadcast(event, data) {
         this.players.forEach(player => {
             player.socket.emit(event, data);
+        });
+    }
+
+    broadcastConsentStatus() {
+        const consentedCount = this.getConsentedPlayersCount();
+        this.broadcast('consent-count-update', {
+            consentedPlayers: consentedCount,
+            totalPlayers: 4
+        });
+    }
+
+    broadcastDemographicsStatus() {
+        const completedCount = this.getDemographicsCompletedCount();
+        this.broadcast('demographics-count-update', {
+            completedPlayers: completedCount,
+            totalPlayers: 4
+        });
+    }
+
+    broadcastComprehensionStatus() {
+        const completedCount = this.comprehensionCompleted.size;
+        this.broadcast('comprehension-status', {
+            completedPlayers: completedCount,
+            totalPlayers: 4,
+            waitingForOthers: completedCount < 4
         });
     }
 }
@@ -183,76 +259,234 @@ io.on('connection', (socket) => {
             room.ipAddresses.set(playerId, socket.handshake.address || socket.conn.remoteAddress || '');
             room.timestamps.set(playerId, { joined: new Date().toISOString() });
 
-            // Log interaction
+            // If room is now full, assign balanced conditions immediately
+            if (room.isFull()) {
+                console.log(`🎯 Room ${room.id.substring(0, 8)} is full! Assigning conditions...`);
+                room.assignBalancedConditions();
+                room.status = 'consent';
+                
+                // Debug: Show all assigned conditions
+                console.log('🔍 Assigned conditions:');
+                room.players.forEach(player => {
+                    console.log(`  Player ${player.id.substring(0, 8)}: ${room.conditions.get(player.id)}`);
+                });
+                
+                // Update all existing players with their newly assigned conditions
+                room.players.forEach(player => {
+                    console.log(`📤 Sending condition-assigned to Player ${player.id.substring(0, 8)}: ${room.conditions.get(player.id)}`);
+                    player.socket.emit('condition-assigned', {
+                        condition: room.conditions.get(player.id)
+                    });
+                });
+            }
+
+            // Log interaction (now with correct condition)
             db.run(`INSERT INTO interactions (id, player_id, group_id, action_type, action_data) 
                     VALUES (?, ?, ?, ?, ?)`,
                 [uuidv4(), playerId, room.id, 'join_game', JSON.stringify({
                     name: playerData.name,
+                    condition: room.conditions.get(playerId),
                     userAgent: socket.handshake.headers['user-agent'],
                     ip: socket.handshake.address
                 })]);
 
-            console.log(`Player ${playerId} joined room ${room.id}. Players: ${room.players.length}/4`);
+            console.log(`Player ${playerId.substring(0, 8)} joined room ${room.id.substring(0, 8)}. Players: ${room.players.length}/4. Condition: ${room.conditions.get(playerId)}`);
 
-            // Send initial data to player
+            // Send initial data to player (now with correct condition)
             socket.emit('joined-room', {
                 playerId,
                 roomId: room.id,
+                playerNumber: room.players.length,
                 playersCount: room.players.length,
-                playerNumber: room.players.length
+                condition: room.conditions.get(playerId)
             });
 
-            // Update all players in room about player count
-            room.broadcast('player-count-update', {
-                playersCount: room.players.length,
-                status: room.status
-            });
+            // Broadcast updated player count
+            room.broadcast('player-count-update', { playersCount: room.players.length });
 
-            // If room is full, start the game
-            if (room.isFull()) {
-                console.log(`Room ${room.id} is full. Starting game.`);
-                room.status = 'instructions';
-                room.instructionsStartTime = Date.now();
-                
-                // Update group start time
-                db.run(`UPDATE groups SET start_time = ? WHERE id = ?`, 
-                    [new Date().toISOString(), room.id]);
-                
-                room.broadcast('game-starting', {
-                    message: 'Oyun başlıyor! Lütfen talimatları okuyun.'
-                });
+            // If room was just filled, start consent phase
+            if (room.isFull() && room.status === 'consent') {
+                console.log(`📋 Starting consent phase for room ${room.id.substring(0, 8)}`);
+                setTimeout(() => {
+                    room.broadcast('room-full-start-consent', {});
+                }, 1000);
             }
         } else {
-            socket.emit('room-full', { message: 'Oda dolu, yeni oda aranıyor...' });
+            socket.emit('room-full', { message: 'Oda dolu veya oyun başlamış.' });
         }
     });
 
-    socket.on('ready-to-play', () => {
+    socket.on('submit-consent', (data) => {
         const playerInfo = players.get(socket.id);
         if (!playerInfo) return;
 
         const room = rooms.get(playerInfo.roomId);
         if (!room) return;
 
-        // Store instructions completion time
-        const instructionsTime = Date.now() - room.instructionsStartTime;
-        room.instructionsTimes.set(playerInfo.playerId, instructionsTime);
+        room.consentGiven.set(playerInfo.playerId, data.consentGiven);
         
+        // Update timestamp
+        const timestamps = room.timestamps.get(playerInfo.playerId) || {};
+        timestamps.consent = new Date().toISOString();
+        room.timestamps.set(playerInfo.playerId, timestamps);
+
         // Log interaction
         db.run(`INSERT INTO interactions (id, player_id, group_id, action_type, action_data) 
                 VALUES (?, ?, ?, ?, ?)`,
-            [uuidv4(), playerInfo.playerId, room.id, 'ready_to_play', JSON.stringify({
-                instructionsTime: instructionsTime
-            })]);
+            [uuidv4(), playerInfo.playerId, room.id, 'submit_consent', JSON.stringify(data)]);
 
-        // Check if all players are ready
-        room.status = 'playing';
-        room.startTime = Date.now();
+        // No group waiting, just acknowledge
+        socket.emit('consent-received', { success: true });
+
+        // If all players have finished demographics, move to instructions
+        // (handled in demographics handler)
+    });
+
+    socket.on('submit-demographics', (data) => {
+        const playerInfo = players.get(socket.id);
+        if (!playerInfo) return;
+
+        const room = rooms.get(playerInfo.roomId);
+        if (!room) return;
+
+        room.demographics.set(playerInfo.playerId, data);
         
-        room.broadcast('start-contribution-phase', {
-            message: 'Katkı aşaması başlıyor!',
-            startingAmount: 20
-        });
+        // Update timestamp
+        const timestamps = room.timestamps.get(playerInfo.playerId) || {};
+        timestamps.demographics = new Date().toISOString();
+        room.timestamps.set(playerInfo.playerId, timestamps);
+
+        // Log interaction
+        db.run(`INSERT INTO interactions (id, player_id, group_id, action_type, action_data) 
+                VALUES (?, ?, ?, ?, ?)`,
+            [uuidv4(), playerInfo.playerId, room.id, 'submit_demographics', JSON.stringify(data)]);
+
+        socket.emit('demographics-received', { success: true });
+
+        // If all players have finished demographics, start instructions for all
+        if (room.allPlayersDemographicsComplete()) {
+            console.log(`📚 All players completed demographics! Starting instructions phase for room ${room.id.substring(0, 8)}`);
+            room.status = 'instructions';
+            setTimeout(() => {
+                // Set instruction start timestamps for all players
+                room.players.forEach(player => {
+                    const timestamps = room.timestamps.get(player.id) || {};
+                    timestamps.instructionsStart = new Date().toISOString();
+                    room.timestamps.set(player.id, timestamps);
+                });
+                console.log(`📝 Broadcasting start-instructions-phase to all players in room ${room.id.substring(0, 8)}`);
+                room.broadcast('start-instructions-phase', {});
+            }, 1000);
+        } else {
+            console.log(`📊 Demographics progress: ${room.demographics.size}/4 players completed`);
+        }
+    });
+
+    socket.on('ready-to-play', () => {
+        const playerInfo = players.get(socket.id);
+        if (!playerInfo) {
+            console.log('❌ ready-to-play: No player info found');
+            return;
+        }
+
+        const room = rooms.get(playerInfo.roomId);
+        if (!room) {
+            console.log('❌ ready-to-play: No room found');
+            return;
+        }
+        
+        if (room.status !== 'instructions') {
+            console.log(`❌ ready-to-play: Room status is '${room.status}', expected 'instructions'`);
+            return;
+        }
+
+        // Mark this player as ready
+        room.readyPlayers.add(playerInfo.playerId);
+        
+        console.log(`✅ Player ${playerInfo.playerId.substring(0, 8)} is ready. Total ready: ${room.readyPlayers.size}/4`);
+
+        // Record instructions time
+        const timestamps = room.timestamps.get(playerInfo.playerId) || {};
+        const instructionsTime = timestamps.instructionsStart ? 
+            Date.now() - new Date(timestamps.instructionsStart).getTime() : 0;
+        room.instructionsTimes.set(playerInfo.playerId, instructionsTime);
+
+        // Log interaction
+        db.run(`INSERT INTO interactions (id, player_id, group_id, action_type, action_data) 
+                VALUES (?, ?, ?, ?, ?)`,
+            [uuidv4(), playerInfo.playerId, room.id, 'ready_to_play', JSON.stringify({ instructionsTime })]);
+
+        // If all players are ready, start the contribution phase for all
+        if (room.readyPlayers.size === 4) {
+            console.log('🎮 All players ready! Starting contribution phase...');
+            room.status = 'playing';
+            room.players.forEach(player => {
+                const condition = room.conditions.get(player.id);
+                player.socket.emit('start-contribution-phase', { 
+                    condition: condition,
+                    timeLimit: condition === 'time_pressure' ? 10 : null,
+                    minTime: condition === 'time_delay' ? 10 : null
+                });
+                // Set contribution start timestamp
+                const timestamps = room.timestamps.get(player.id) || {};
+                timestamps.contributionStart = new Date().toISOString();
+                room.timestamps.set(player.id, timestamps);
+                
+                // Set up automatic submission for time_pressure players
+                if (condition === 'time_pressure') {
+                    setTimeout(() => {
+                        // Check if player hasn't submitted yet
+                        if (!room.contributions.has(player.id) && room.status === 'playing') {
+                            console.log(`⏱️ Auto-submitting for time_pressure player ${player.id.substring(0, 8)} - time expired`);
+                            
+                            // Auto-submit with 0 contribution (default value)
+                            room.contributions.set(player.id, 0);
+                            room.decisionTimes.set(player.id, 10000); // Exactly 10 seconds
+                            
+                            // Update timestamp
+                            const timestamps = room.timestamps.get(player.id) || {};
+                            timestamps.contribution = new Date().toISOString();
+                            room.timestamps.set(player.id, timestamps);
+                            
+                            // Log the auto-submission
+                            db.run(`INSERT INTO interactions (id, player_id, group_id, action_type, action_data) 
+                                    VALUES (?, ?, ?, ?, ?)`,
+                                [uuidv4(), player.id, room.id, 'auto_submit_contribution', JSON.stringify({
+                                    contribution: 0,
+                                    decisionTime: 10000,
+                                    condition: condition,
+                                    reason: 'time_expired'
+                                })]);
+                            
+                            console.log(`Player ${player.id} auto-contributed 0 credits due to timeout (time_pressure)`);
+                            
+                            // Notify the player
+                            player.socket.emit('contribution-auto-submitted', { 
+                                contribution: 0,
+                                reason: 'Zaman doldu! Kararınız otomatik olarak gönderildi.' 
+                            });
+                            
+                            // Update other players about progress
+                            room.broadcast('waiting-for-others', { 
+                                completedPlayers: room.contributions.size 
+                            });
+                            
+                            // Check if all players have now contributed
+                            if (room.allPlayersContributed()) {
+                                room.status = 'comprehension';
+                                setTimeout(() => {
+                                    room.broadcast('start-comprehension-phase', {});
+                                }, 1000);
+                            }
+                        }
+                    }, 10500); // 10.5 seconds to account for network delay
+                }
+            });
+        } else {
+            console.log(`📢 Broadcasting ready status: ${room.readyPlayers.size}/4 players ready`);
+            // Not all ready, only notify the player who just clicked
+            socket.emit('waiting-for-others-to-start', { readyCount: room.readyPlayers.size });
+        }
     });
 
     socket.on('submit-contribution', (data) => {
@@ -262,11 +496,28 @@ io.on('connection', (socket) => {
         const room = rooms.get(playerInfo.roomId);
         if (!room || room.status !== 'playing') return;
 
-        const decisionTime = Date.now() - room.startTime;
+        const condition = room.conditions.get(playerInfo.playerId);
+        const decisionTime = data.decisionTime;
+        
+        // Validate time constraints based on condition
+        if (condition === 'time_pressure' && decisionTime > 10000) {
+            socket.emit('contribution-rejected', { 
+                reason: 'Zaman aşımı! Karar verme süreniz 10 saniyeyi aştı.' 
+            });
+            return;
+        }
+        
+        if (condition === 'time_delay' && decisionTime < 10000) {
+            socket.emit('contribution-rejected', { 
+                reason: 'Lütfen en az 10 saniye düşünün!' 
+            });
+            return;
+        }
+
         room.contributions.set(playerInfo.playerId, data.contribution);
         room.decisionTimes.set(playerInfo.playerId, decisionTime);
-        
-        // Store contribution timestamp
+
+        // Update timestamp
         const timestamps = room.timestamps.get(playerInfo.playerId) || {};
         timestamps.contribution = new Date().toISOString();
         room.timestamps.set(playerInfo.playerId, timestamps);
@@ -275,26 +526,25 @@ io.on('connection', (socket) => {
         db.run(`INSERT INTO interactions (id, player_id, group_id, action_type, action_data) 
                 VALUES (?, ?, ?, ?, ?)`,
             [uuidv4(), playerInfo.playerId, room.id, 'submit_contribution', JSON.stringify({
-                contribution: data.contribution,
-                decisionTime: decisionTime,
-                timestamp: new Date().toISOString()
+                ...data,
+                condition: condition
             })]);
 
-        console.log(`Player ${playerInfo.playerId} contributed ${data.contribution} TL in ${decisionTime}ms`);
+        console.log(`Player ${playerInfo.playerId} contributed ${data.contribution} credits in ${decisionTime}ms (${condition})`);
 
         socket.emit('contribution-received', { success: true });
-        
-        room.broadcast('waiting-for-others', {
-            completedPlayers: room.contributions.size,
-            totalPlayers: 4
+
+        // Update other players about progress
+        room.broadcast('waiting-for-others', { 
+            completedPlayers: room.contributions.size 
         });
 
-        // If all players contributed, move to comprehension phase
+        // Check if all players contributed
         if (room.allPlayersContributed()) {
             room.status = 'comprehension';
-            room.broadcast('start-comprehension', {
-                message: 'Tüm oyuncular katkılarını yaptı. Şimdi anlama sorularına geçiyoruz.'
-            });
+            setTimeout(() => {
+                room.broadcast('start-comprehension-phase', {});
+            }, 1000);
         }
     });
 
@@ -305,124 +555,176 @@ io.on('connection', (socket) => {
         const room = rooms.get(playerInfo.roomId);
         if (!room || room.status !== 'comprehension') return;
 
-        room.comprehensionAnswers.set(playerInfo.playerId, {
-            q1: data.q1, // What contribution level earns highest payoff for the group?
-            q2: data.q2  // What contribution level earns highest payoff for you personally?
-        });
+        room.comprehensionAnswers.set(playerInfo.playerId, data);
+        room.comprehensionCompleted.set(playerInfo.playerId, true);
+
+        // Update timestamp
+        const timestamps = room.timestamps.get(playerInfo.playerId) || {};
+        timestamps.comprehension = new Date().toISOString();
+        room.timestamps.set(playerInfo.playerId, timestamps);
+
+        // Log interaction
+        db.run(`INSERT INTO interactions (id, player_id, group_id, action_type, action_data) 
+                VALUES (?, ?, ?, ?, ?)`,
+            [uuidv4(), playerInfo.playerId, room.id, 'submit_comprehension', JSON.stringify(data)]);
+
+        console.log(`Player ${playerInfo.playerId} answered comprehension questions`);
 
         socket.emit('comprehension-received', { success: true });
 
-        // If all players answered, show results
+        // Broadcast status to all players
+        room.broadcastComprehensionStatus();
+
+        // Check if all players answered
         if (room.allPlayersAnsweredComprehension()) {
-            const payoffs = room.calculatePayoffs();
             room.status = 'results';
-
-            // Save comprehensive data to database
-            room.players.forEach(player => {
-                const contribution = room.contributions.get(player.id);
-                const decisionTime = room.decisionTimes.get(player.id);
-                const payoff = payoffs.get(player.id);
-                const comprehension = room.comprehensionAnswers.get(player.id);
-                const participantName = room.participantNames.get(player.id);
-                const instructionsTime = room.instructionsTimes.get(player.id);
-                const timestamps = room.timestamps.get(player.id) || {};
-                const userAgent = room.userAgents.get(player.id);
-                const ipAddress = room.ipAddresses.get(player.id);
+            setTimeout(() => {
+                const payoffs = room.calculatePayoffs();
                 
-                // Calculate session duration
-                const joinTime = new Date(timestamps.joined).getTime();
-                const currentTime = Date.now();
-                const sessionDuration = currentTime - joinTime;
-
-                timestamps.comprehension = new Date().toISOString();
-                room.timestamps.set(player.id, timestamps);
-
-                db.run(`INSERT INTO sessions 
-                    (id, player_id, group_id, participant_name, contribution, decision_time, payoff, 
-                     comprehension_q1, comprehension_q2, instructions_time, contribution_timestamp, 
-                     comprehension_timestamp, user_agent, ip_address, session_duration, browser_info)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                    [uuidv4(), player.id, room.id, participantName, contribution, decisionTime, 
-                     payoff.totalPayoff, comprehension.q1, comprehension.q2, instructionsTime,
-                     timestamps.contribution, timestamps.comprehension, userAgent, ipAddress, 
-                     sessionDuration, JSON.stringify({userAgent, screen: 'unknown'})]
-                );
-            });
-
-            // Update group completion data
-            const avgDecisionTime = Array.from(room.decisionTimes.values()).reduce((a, b) => a + b, 0) / 4;
-            db.run(`UPDATE groups SET end_time = ?, completion_rate = ?, avg_decision_time = ? WHERE id = ?`,
-                [new Date().toISOString(), 1.0, avgDecisionTime, room.id]);
-
-            // Send results to all players
-            room.players.forEach(player => {
-                const playerPayoff = payoffs.get(player.id);
-                player.socket.emit('game-results', {
-                    yourContribution: playerPayoff.contribution,
-                    yourKept: playerPayoff.kept,
-                    totalPool: Array.from(room.contributions.values()).reduce((sum, c) => sum + c, 0) * 2,
-                    yourShare: playerPayoff.equalShare,
-                    yourTotalPayoff: playerPayoff.totalPayoff,
-                    allContributions: Array.from(room.contributions.values())
+                // Send results to each player
+                room.players.forEach(player => {
+                    const playerPayoff = payoffs.get(player.id);
+                    const allContributions = Array.from(room.contributions.values());
+                    
+                    player.socket.emit('game-results', {
+                        yourContribution: playerPayoff.contribution,
+                        yourKept: playerPayoff.kept,
+                        yourShare: playerPayoff.equalShare,
+                        yourCreditsWon: playerPayoff.creditsWon,
+                        yourLotteryTickets: playerPayoff.lotteryTickets,
+                        allContributions: allContributions,
+                        totalPool: allContributions.reduce((sum, c) => sum + c, 0) * 2
+                    });
                 });
-            });
+
+                // Save session data to database
+                saveSessionData(room, payoffs);
+            }, 1000);
         }
     });
 
-    socket.on('submit-demographics', (data) => {
+    socket.on('complete-experiment', () => {
         const playerInfo = players.get(socket.id);
         if (!playerInfo) return;
 
         const room = rooms.get(playerInfo.roomId);
-        if (room) {
-            // Store final completion timestamp
-            const timestamps = room.timestamps.get(playerInfo.playerId) || {};
-            timestamps.completion = new Date().toISOString();
-            room.timestamps.set(playerInfo.playerId, timestamps);
-        }
+        if (!room) return;
 
-        // Log final interaction
+        // Update completion timestamp
+        const timestamps = room.timestamps.get(playerInfo.playerId) || {};
+        timestamps.completion = new Date().toISOString();
+        room.timestamps.set(playerInfo.playerId, timestamps);
+
+        // Log interaction
         db.run(`INSERT INTO interactions (id, player_id, group_id, action_type, action_data) 
                 VALUES (?, ?, ?, ?, ?)`,
-            [uuidv4(), playerInfo.playerId, playerInfo.roomId, 'submit_demographics', JSON.stringify(data)]);
+            [uuidv4(), playerInfo.playerId, room.id, 'complete_experiment', JSON.stringify({
+                completionTime: timestamps.completion
+            })]);
 
-        // Update database with demographics and final completion timestamp
-        db.run(`UPDATE sessions SET age = ?, gender = ?, major = ?, completion_timestamp = ? WHERE player_id = ?`,
-            [data.age, data.gender, data.major, new Date().toISOString(), playerInfo.playerId]
-        );
-
-        socket.emit('experiment-complete', {
-            message: 'Deney tamamlandı! Katılımınız için teşekkürler.'
+        socket.emit('experiment-complete', { 
+            message: 'Deney tamamlandı! Teşekkürler.' 
         });
     });
 
     socket.on('disconnect', () => {
-        console.log('Player disconnected:', socket.id);
-        
         const playerInfo = players.get(socket.id);
         if (playerInfo) {
             const room = rooms.get(playerInfo.roomId);
             if (room) {
                 room.removePlayer(playerInfo.playerId);
                 
-                if (room.status === 'empty') {
-                    rooms.delete(room.id);
-                } else {
+                // Notify other players
+                if (room.players.length > 0) {
                     room.broadcast('player-disconnected', {
                         playersCount: room.players.length,
-                        message: 'Bir oyuncu ayrıldı.'
+                        message: 'Bir oyuncu ayrıldı. Deney iptal edilebilir.'
                     });
+                }
+                
+                // Clean up empty rooms
+                if (room.status === 'empty') {
+                    rooms.delete(playerInfo.roomId);
                 }
             }
             players.delete(socket.id);
         }
+        console.log('Player disconnected:', socket.id);
     });
 });
 
-// API endpoints for data export and analysis
+function saveSessionData(room, payoffs) {
+    const sessionId = uuidv4();
+    
+    room.players.forEach(player => {
+        const playerPayoff = payoffs.get(player.id);
+        const demographics = room.demographics.get(player.id) || {};
+        const timestamps = room.timestamps.get(player.id) || {};
+        const consent = room.consentGiven.get(player.id);
+        const condition = room.conditions.get(player.id);
+        const comprehension = room.comprehensionAnswers.get(player.id) || {};
+        
+        const sessionDuration = timestamps.completion && timestamps.joined ? 
+            new Date(timestamps.completion).getTime() - new Date(timestamps.joined).getTime() : null;
+
+        db.run(`INSERT INTO sessions (
+            id, player_id, group_id, participant_name, condition, consent_given,
+            contribution, decision_time, credits_won, lottery_tickets,
+            comprehension_q1, comprehension_q2, age, gender, major,
+            instructions_time, consent_timestamp, demographics_timestamp,
+            contribution_timestamp, comprehension_timestamp, completion_timestamp,
+            user_agent, ip_address, session_duration, browser_info
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+            uuidv4(), player.id, room.id, 
+            room.participantNames.get(player.id),
+            condition,
+            consent ? 1 : 0,
+            room.contributions.get(player.id),
+            room.decisionTimes.get(player.id),
+            playerPayoff.creditsWon,
+            playerPayoff.lotteryTickets,
+            comprehension.q1, comprehension.q2,
+            demographics.age, demographics.gender, demographics.major,
+            room.instructionsTimes.get(player.id),
+            timestamps.consent,
+            timestamps.demographics,
+            timestamps.contribution,
+            timestamps.comprehension,
+            timestamps.completion,
+            room.userAgents.get(player.id),
+            room.ipAddresses.get(player.id),
+            sessionDuration,
+            JSON.stringify({ userAgent: room.userAgents.get(player.id) })
+        ]);
+    });
+
+    // Update group summary
+    const totalContribution = Array.from(room.contributions.values()).reduce((sum, c) => sum + c, 0);
+    const totalCredits = Array.from(payoffs.values()).reduce((sum, p) => sum + p.creditsWon, 0);
+    const avgDecisionTime = Array.from(room.decisionTimes.values()).reduce((sum, t) => sum + t, 0) / room.decisionTimes.size;
+
+    db.run(`UPDATE groups SET 
+            status = 'completed',
+            total_contribution = ?,
+            total_credits_distributed = ?,
+            end_time = CURRENT_TIMESTAMP,
+            completion_rate = 1.0,
+            avg_decision_time = ?
+            WHERE id = ?`,
+        [totalContribution, totalCredits, Math.round(avgDecisionTime), room.id]);
+
+    console.log(`Session completed for room ${room.id}. Total contribution: ${totalContribution} credits`);
+}
+
+// API Routes for data export and admin functionality
 app.get('/api/export-data', (req, res) => {
-    db.all('SELECT * FROM sessions ORDER BY created_at DESC', (err, rows) => {
+    db.all(`SELECT s.*, g.total_contribution, g.avg_decision_time, g.completion_rate, g.end_time as group_end_time
+            FROM sessions s 
+            LEFT JOIN groups g ON s.group_id = g.id 
+            ORDER BY s.created_at DESC`, [], (err, rows) => {
         if (err) {
+            console.error('Error exporting data:', err);
             res.status(500).json({ error: err.message });
             return;
         }
@@ -430,6 +732,19 @@ app.get('/api/export-data', (req, res) => {
     });
 });
 
+app.delete('/api/delete-all-data', (req, res) => {
+    db.serialize(() => {
+        db.run('DELETE FROM sessions');
+        db.run('DELETE FROM groups');
+        db.run('DELETE FROM interactions');
+        db.run('VACUUM'); // Reclaim space
+    });
+    
+    console.log('All experiment data deleted');
+    res.json({ success: true, message: 'Tüm veriler silindi' });
+});
+
+// API endpoints for data export and analysis
 app.get('/api/export-interactions', (req, res) => {
     db.all('SELECT * FROM interactions ORDER BY timestamp DESC', (err, rows) => {
         if (err) {
@@ -453,13 +768,14 @@ app.get('/api/export-groups', (req, res) => {
 app.get('/api/stats', (req, res) => {
     db.all(`
         SELECT 
-            COUNT(*) as total_sessions,
-            AVG(contribution) as avg_contribution,
-            AVG(decision_time) as avg_decision_time,
-            AVG(payoff) as avg_payoff,
-            AVG(instructions_time) as avg_instructions_time,
-            AVG(session_duration) as avg_session_duration,
-            COUNT(DISTINCT group_id) as total_groups
+            COUNT(*) as totalSessions,
+            AVG(contribution) as avgContribution,
+            AVG(decision_time) as avgDecisionTime,
+            AVG(credits_won) as avgCredits,
+            AVG(instructions_time) as avgInstructionsTime,
+            AVG(session_duration) as avgSessionDuration,
+            COUNT(DISTINCT group_id) as totalGroups,
+            AVG(lottery_tickets) as avgLotteryTickets
         FROM sessions WHERE contribution IS NOT NULL
     `, (err, rows) => {
         if (err) {

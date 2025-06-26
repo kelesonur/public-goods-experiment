@@ -80,6 +80,7 @@
             display: flex;
             gap: 10px;
             margin-bottom: 20px;
+            align-items: center;
         }
         
         .btn-small {
@@ -87,16 +88,63 @@
             font-size: 0.9rem;
         }
         
+        .btn-danger {
+            background: #e53e3e;
+            color: white;
+            border: none;
+        }
+        
+        .btn-danger:hover {
+            background: #c53030;
+        }
+        
         .refresh-indicator {
             color: #48bb78;
             font-weight: 500;
+        }
+        
+        .delete-section {
+            background: #fff5f5;
+            border: 2px solid #fed7d7;
+            border-radius: 8px;
+            padding: 15px;
+            margin-left: auto;
+            min-width: 200px;
+        }
+        
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+        }
+        
+        .modal-content {
+            background-color: white;
+            margin: 15% auto;
+            padding: 20px;
+            border-radius: 12px;
+            width: 400px;
+            text-align: center;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        }
+        
+        .modal-buttons {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin-top: 20px;
         }
     </style>
 </head>
 <body>
     <div class="admin-panel">
         <header class="header">
-            <h1>📊 Deney Yönetici Paneli</h1>
+            <h1>Deney Yönetici Paneli</h1>
             <p class="subtitle">Kamusal Mal Oyunu - Gerçek Zamanlı İzleme</p>
         </header>
 
@@ -105,6 +153,11 @@
             <button id="export-csv-btn" class="btn btn-small">CSV Export</button>
             <button id="refresh-btn" class="btn btn-secondary btn-small">Yenile</button>
             <span id="last-refresh" class="refresh-indicator"></span>
+            
+            <div class="delete-section">
+                <p style="margin: 0 0 10px 0; font-weight: 600; color: #c53030;">⚠️ Tehlikeli Alan</p>
+                <button id="delete-all-btn" class="btn btn-danger btn-small">Tüm Verileri Sil</button>
+            </div>
         </div>
 
         <div class="dashboard-grid">
@@ -115,7 +168,7 @@
             
             <div class="stat-card">
                 <div class="stat-number" id="avg-contribution">-</div>
-                <div class="stat-label">Ortalama Katkı (TL)</div>
+                <div class="stat-label">Ortalama Katkı (Kredi)</div>
             </div>
             
             <div class="stat-card">
@@ -124,8 +177,8 @@
             </div>
             
             <div class="stat-card">
-                <div class="stat-number" id="avg-payoff">-</div>
-                <div class="stat-label">Ortalama Kazanç (TL)</div>
+                <div class="stat-number" id="avg-credits">-</div>
+                <div class="stat-label">Ortalama Kazanç (Kredi)</div>
             </div>
         </div>
 
@@ -140,9 +193,11 @@
                             <th>Tarih</th>
                             <th>Oyuncu ID</th>
                             <th>Grup ID</th>
+                            <th>Koşul</th>
                             <th>Katkı</th>
                             <th>Karar Süresi (ms)</th>
-                            <th>Kazanç</th>
+                            <th>Kredi Kazancı</th>
+                            <th>Çekiliş Bileti</th>
                             <th>Yaş</th>
                             <th>Cinsiyet</th>
                             <th>Bölüm</th>
@@ -152,6 +207,21 @@
                         <!-- Data will be populated here -->
                     </tbody>
                 </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Delete Confirmation Modal -->
+    <div id="delete-modal" class="modal">
+        <div class="modal-content">
+            <h3 style="color: #c53030; margin-bottom: 15px;">⚠️ Veri Silme Onayı</h3>
+            <p>Bu işlem <strong>geri alınamaz</strong>!</p>
+            <p>Tüm deney verileri, grup kayıtları ve etkileşim logları kalıcı olarak silinecektir.</p>
+            <p style="margin-top: 15px;"><strong>Emin misiniz?</strong></p>
+            
+            <div class="modal-buttons">
+                <button id="confirm-delete-btn" class="btn btn-danger">Evet, Tüm Verileri Sil</button>
+                <button id="cancel-delete-btn" class="btn btn-secondary">İptal</button>
             </div>
         </div>
     </div>
@@ -181,6 +251,53 @@
                 document.getElementById('export-csv-btn').addEventListener('click', () => {
                     this.exportCSV();
                 });
+
+                document.getElementById('delete-all-btn').addEventListener('click', () => {
+                    this.showDeleteModal();
+                });
+
+                document.getElementById('confirm-delete-btn').addEventListener('click', () => {
+                    this.deleteAllData();
+                });
+
+                document.getElementById('cancel-delete-btn').addEventListener('click', () => {
+                    this.hideDeleteModal();
+                });
+
+                // Close modal when clicking outside
+                document.getElementById('delete-modal').addEventListener('click', (e) => {
+                    if (e.target.id === 'delete-modal') {
+                        this.hideDeleteModal();
+                    }
+                });
+            }
+
+            showDeleteModal() {
+                document.getElementById('delete-modal').style.display = 'block';
+            }
+
+            hideDeleteModal() {
+                document.getElementById('delete-modal').style.display = 'none';
+            }
+
+            async deleteAllData() {
+                try {
+                    const response = await fetch('/api/delete-all-data', {
+                        method: 'DELETE'
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        alert('✅ Tüm veriler başarıyla silindi!');
+                        this.hideDeleteModal();
+                        this.loadData(); // Refresh the display
+                    } else {
+                        alert('❌ Veri silme işlemi başarısız: ' + result.message);
+                    }
+                } catch (error) {
+                    alert('❌ Hata oluştu: ' + error.message);
+                }
             }
 
             async loadData() {
@@ -200,74 +317,101 @@
                         `Son güncelleme: ${new Date().toLocaleTimeString('tr-TR')}`;
 
                 } catch (error) {
-                    console.error('Veri yüklerken hata:', error);
+                    console.error('Error loading data:', error);
+                    document.getElementById('last-refresh').textContent = 
+                        `Hata: ${error.message}`;
                 }
             }
 
             updateStats(stats) {
-                document.getElementById('total-sessions').textContent = stats.total_sessions || 0;
+                document.getElementById('total-sessions').textContent = stats.totalSessions || 0;
                 document.getElementById('avg-contribution').textContent = 
-                    stats.avg_contribution ? stats.avg_contribution.toFixed(1) : '-';
+                    stats.avgContribution ? stats.avgContribution.toFixed(1) : '0.0';
                 document.getElementById('avg-decision-time').textContent = 
-                    stats.avg_decision_time ? (stats.avg_decision_time / 1000).toFixed(1) : '-';
-                document.getElementById('avg-payoff').textContent = 
-                    stats.avg_payoff ? stats.avg_payoff.toFixed(1) : '-';
+                    stats.avgDecisionTime ? (stats.avgDecisionTime / 1000).toFixed(1) : '0.0';
+                document.getElementById('avg-credits').textContent = 
+                    stats.avgCredits ? stats.avgCredits.toFixed(1) : '0.0';
             }
 
             updateTable() {
                 const tbody = document.getElementById('data-table-body');
                 tbody.innerHTML = '';
 
-                this.data.slice(0, 50).forEach(session => {
+                // Show latest 50 entries
+                const recentData = this.data.slice(0, 50);
+                
+                recentData.forEach(session => {
                     const row = document.createElement('tr');
+                    
+                    const date = new Date(session.created_at).toLocaleString('tr-TR');
+                    const playerId = session.player_id ? session.player_id.substring(0, 8) + '...' : '-';
+                    const groupId = session.group_id ? session.group_id.substring(0, 8) + '...' : '-';
+                    
                     row.innerHTML = `
-                        <td>${new Date(session.created_at).toLocaleString('tr-TR')}</td>
-                        <td>${session.player_id.substring(0, 8)}...</td>
-                        <td>${session.group_id.substring(0, 8)}...</td>
-                        <td>${session.contribution} TL</td>
-                        <td>${session.decision_time}</td>
-                        <td>${session.payoff ? session.payoff.toFixed(2) : '-'} TL</td>
+                        <td>${date}</td>
+                        <td title="${session.player_id}">${playerId}</td>
+                        <td title="${session.group_id}">${groupId}</td>
+                        <td>${session.condition || '-'}</td>
+                        <td>${session.contribution || '-'}</td>
+                        <td>${session.decision_time || '-'}</td>
+                        <td>${session.credits_won || '-'}</td>
+                        <td>${session.lottery_tickets || '-'}</td>
                         <td>${session.age || '-'}</td>
                         <td>${session.gender || '-'}</td>
                         <td>${session.major || '-'}</td>
                     `;
+                    
                     tbody.appendChild(row);
                 });
             }
 
             exportJSON() {
                 const dataStr = JSON.stringify(this.data, null, 2);
-                const dataBlob = new Blob([dataStr], {type: 'application/json'});
+                const dataBlob = new Blob([dataStr], { type: 'application/json' });
+                const url = URL.createObjectURL(dataBlob);
                 
                 const link = document.createElement('a');
-                link.href = URL.createObjectURL(dataBlob);
-                link.download = `experiment_data_${new Date().toISOString().split('T')[0]}.json`;
+                link.href = url;
+                link.download = `experiment_data_${new Date().toISOString().slice(0, 10)}.json`;
                 link.click();
+                
+                URL.revokeObjectURL(url);
             }
 
             exportCSV() {
-                if (this.data.length === 0) return;
+                if (this.data.length === 0) {
+                    alert('Henüz veri bulunmuyor.');
+                    return;
+                }
 
                 const headers = Object.keys(this.data[0]);
                 const csvContent = [
                     headers.join(','),
                     ...this.data.map(row => 
-                        headers.map(header => 
-                            JSON.stringify(row[header] || '')
-                        ).join(',')
+                        headers.map(header => {
+                            const value = row[header];
+                            // Escape quotes and wrap in quotes if contains comma
+                            if (typeof value === 'string' && (value.includes(',') || value.includes('"'))) {
+                                return `"${value.replace(/"/g, '""')}"`;
+                            }
+                            return value || '';
+                        }).join(',')
                     )
                 ].join('\n');
 
-                const dataBlob = new Blob([csvContent], {type: 'text/csv'});
+                const dataBlob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(dataBlob);
                 
                 const link = document.createElement('a');
-                link.href = URL.createObjectURL(dataBlob);
-                link.download = `experiment_data_${new Date().toISOString().split('T')[0]}.csv`;
+                link.href = url;
+                link.download = `experiment_data_${new Date().toISOString().slice(0, 10)}.csv`;
                 link.click();
+                
+                URL.revokeObjectURL(url);
             }
         }
 
-        // Initialize dashboard when DOM is ready
+        // Initialize dashboard when page loads
         document.addEventListener('DOMContentLoaded', () => {
             new AdminDashboard();
         });
