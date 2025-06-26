@@ -331,9 +331,8 @@ function startCountdown(seconds) {
             clearInterval(gameState.countdownInterval);
             countdownEl.textContent = 'Zaman Doldu!';
             countdownEl.style.color = 'red';
-            submitBtn.disabled = true;
-            submitBtn.textContent = 'Zaman Aşımı';
-            // Auto-submit for time_pressure
+            
+            // Auto-submit for time_pressure condition, but DON'T disable the button
             if (!contributionSubmitted && gameState.condition === 'time_pressure') {
                 contributionSubmitted = true;
                 const contribution = parseInt(document.getElementById('contribution-slider').value);
@@ -342,12 +341,17 @@ function startCountdown(seconds) {
                     contribution: contribution,
                     decisionTime: decisionTime
                 });
+                
+                // Update button text to show auto-submission, but keep it enabled
+                submitBtn.textContent = 'Otomatik Gönderildi';
+                submitBtn.disabled = true; // Now disable since it's been submitted
+                
                 // Show auto-submit message
                 let autoMsg = document.createElement('div');
                 autoMsg.id = 'auto-submit-msg';
                 autoMsg.style.color = 'red';
                 autoMsg.style.marginTop = '10px';
-                autoMsg.textContent = 'Cevabınız otomatik olarak gönderildi.';
+                autoMsg.textContent = 'Süre doldu! Kararınız otomatik olarak gönderildi.';
                 submitBtn.parentNode.appendChild(autoMsg);
             }
         }
@@ -474,15 +478,17 @@ document.getElementById('submit-contribution-btn').addEventListener('click', () 
     contributionSubmitted = true;
     const contribution = parseInt(contributionSlider.value);
     const decisionTime = Date.now() - gameState.decisionStartTime;
-    // Validate based on condition
-    if (gameState.condition === 'time_pressure' && decisionTime > 10000) {
-        alert('Çok geç! Karar verme süreniz 10 saniyeyi aştı.');
-        return;
-    }
+    
+    // Validate based on condition - ONLY validate time_delay condition
     if (gameState.condition === 'time_delay' && decisionTime < 10000) {
         alert('Lütfen en az 10 saniye düşünün!');
+        contributionSubmitted = false; // Reset since we're not submitting
         return;
     }
+    
+    // For time_pressure: allow submission at any time (no time validation needed)
+    // The countdown timer handles auto-submission if needed
+    
     socket.emit('submit-contribution', {
         contribution: contribution,
         decisionTime: decisionTime
