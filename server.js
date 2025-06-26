@@ -29,6 +29,7 @@ db.serialize(() => {
         player_id TEXT,
         group_id TEXT,
         participant_name TEXT,
+        participant_email TEXT,
         condition TEXT,
         consent_given BOOLEAN,
         contribution INTEGER,
@@ -92,6 +93,7 @@ class GameRoom {
         this.comprehensionAnswers = new Map();
         this.comprehensionCompleted = new Map();
         this.participantNames = new Map();
+        this.participantEmails = new Map();
         this.instructionsTimes = new Map();
         this.timestamps = new Map();
         this.userAgents = new Map();
@@ -129,6 +131,7 @@ class GameRoom {
         this.comprehensionAnswers.delete(playerId);
         this.comprehensionCompleted.delete(playerId);
         this.participantNames.delete(playerId);
+        this.participantEmails.delete(playerId);
         this.instructionsTimes.delete(playerId);
         this.timestamps.delete(playerId);
         this.userAgents.delete(playerId);
@@ -255,6 +258,7 @@ io.on('connection', (socket) => {
 
             // Store participant data
             room.participantNames.set(playerId, playerData.name || 'Anonymous');
+            room.participantEmails.set(playerId, playerData.email || '');
             room.userAgents.set(playerId, socket.handshake.headers['user-agent'] || '');
             room.ipAddresses.set(playerId, socket.handshake.address || socket.conn.remoteAddress || '');
             room.timestamps.set(playerId, { joined: new Date().toISOString() });
@@ -285,6 +289,7 @@ io.on('connection', (socket) => {
                     VALUES (?, ?, ?, ?, ?)`,
                 [uuidv4(), playerId, room.id, 'join_game', JSON.stringify({
                     name: playerData.name,
+                    email: playerData.email,
                     condition: room.conditions.get(playerId),
                     userAgent: socket.handshake.headers['user-agent'],
                     ip: socket.handshake.address
@@ -668,16 +673,17 @@ function saveSessionData(room, payoffs) {
             new Date(timestamps.completion).getTime() - new Date(timestamps.joined).getTime() : null;
 
         db.run(`INSERT INTO sessions (
-            id, player_id, group_id, participant_name, condition, consent_given,
+            id, player_id, group_id, participant_name, participant_email, condition, consent_given,
             contribution, decision_time, credits_won, lottery_tickets,
             comprehension_q1, comprehension_q2, age, gender, major,
             instructions_time, consent_timestamp, demographics_timestamp,
             contribution_timestamp, comprehension_timestamp, completion_timestamp,
-            user_agent, ip_address, session_duration, browser_info
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            user_agent, ip_address, session_duration, browser_info, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
             uuidv4(), player.id, room.id, 
             room.participantNames.get(player.id),
+            room.participantEmails.get(player.id),
             condition,
             consent ? 1 : 0,
             room.contributions.get(player.id),
@@ -695,7 +701,8 @@ function saveSessionData(room, payoffs) {
             room.userAgents.get(player.id),
             room.ipAddresses.get(player.id),
             sessionDuration,
-            JSON.stringify({ userAgent: room.userAgents.get(player.id) })
+            JSON.stringify({ userAgent: room.userAgents.get(player.id) }),
+            new Date().toISOString()
         ]);
     });
 
