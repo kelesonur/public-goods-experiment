@@ -78,7 +78,8 @@ db.serialize(() => {
 
 // Game state management
 const rooms = new Map();
-const players = new Map();
+const players = new Map(); // Map socket.id to player info
+const persistentPlayers = new Map(); // Map email+roomId to persistent player data
 
 class GameRoom {
     constructor(id) {
@@ -102,13 +103,32 @@ class GameRoom {
         this.instructionsStartTime = null;
         this.createdAt = new Date().toISOString();
         this.readyPlayers = new Set(); // Track who clicked Oyunu Başlat
+        
+        // NEW: Track player states and disconnections
+        this.playerStates = new Map(); // playerId -> current phase/screen
+        this.disconnectedPlayers = new Map(); // playerId -> disconnection timestamp
+        this.disconnectionTimeouts = new Map(); // playerId -> timeout reference
     }
 
-    addPlayer(playerId, socket) {
-        if (this.players.length < 4 && this.status === 'waiting') {
+    addPlayer(playerId, socket, isReconnection = false) {
+        if (!isReconnection && this.players.length < 4 && this.status === 'waiting') {
             this.players.push({ id: playerId, socket });
-            // Do NOT assign condition here. Wait until group is full.
+            this.playerStates.set(playerId, 'waiting');
             return true;
+        } else if (isReconnection) {
+            // Find and update existing player
+            const existingPlayerIndex = this.players.findIndex(p => p.id === playerId);
+            if (existingPlayerIndex !== -1) {
+                this.players[existingPlayerIndex].socket = socket;
+                this.disconnectedPlayers.delete(playerId);
+                
+                // Clear disconnection timeout
+                if (this.disconnectionTimeouts.has(playerId)) {
+                    clearTimeout(this.disconnectionTimeouts.get(playerId));
+                    this.disconnectionTimeouts.delete(playerId);
+                }
+                return true;
+            }
         }
         return false;
     }
@@ -121,7 +141,23 @@ class GameRoom {
         }
     }
 
-    removePlayer(playerId) {
+    markPlayerDisconnected(playerId) {
+        // Mark as disconnected but don't remove immediately
+        this.disconnectedPlayers.set(playerId, new Date().toISOString());
+        
+        // Set timeout to remove player after 5 minutes
+        const timeout = setTimeout(() => {
+            this.removePlayerPermanently(playerId);
+        }, 5 * 60 * 1000); // 5 minutes
+        
+        this.disconnectionTimeouts.set(playerId, timeout);
+        
+        console.log(`Player ${playerId.substring(0, 8)} marked as disconnected in room ${this.id.substring(0, 8)}`);
+    }
+
+    removePlayerPermanently(playerId) {
+        console.log(`Permanently removing player ${playerId.substring(0, 8)} from room ${this.id.substring(0, 8)}`);
+        
         this.players = this.players.filter(p => p.id !== playerId);
         this.consentGiven.delete(playerId);
         this.demographics.delete(playerId);
@@ -136,14 +172,39 @@ class GameRoom {
         this.timestamps.delete(playerId);
         this.userAgents.delete(playerId);
         this.ipAddresses.delete(playerId);
+        this.playerStates.delete(playerId);
+        this.disconnectedPlayers.delete(playerId);
+        this.readyPlayers.delete(playerId);
+        
+        // Clear any timeout
+        if (this.disconnectionTimeouts.has(playerId)) {
+            clearTimeout(this.disconnectionTimeouts.get(playerId));
+            this.disconnectionTimeouts.delete(playerId);
+        }
+        
+        // Remove from persistent players map
+        const email = this.participantEmails.get(playerId);
+        if (email) {
+            const persistentKey = `${email}_${this.id}`;
+            persistentPlayers.delete(persistentKey);
+        }
         
         if (this.players.length === 0) {
             this.status = 'empty';
         }
     }
 
+    // Legacy method for compatibility
+    removePlayer(playerId) {
+        this.markPlayerDisconnected(playerId);
+    }
+
     isFull() {
         return this.players.length === 4;
+    }
+
+    getConnectedPlayersCount() {
+        return this.players.filter(p => !this.disconnectedPlayers.has(p.id)).length;
     }
 
     allPlayersConsented() {
@@ -168,6 +229,24 @@ class GameRoom {
 
     getDemographicsCompletedCount() {
         return this.demographics.size;
+    }
+
+    updatePlayerState(playerId, state) {
+        this.playerStates.set(playerId, state);
+        console.log(`Player ${playerId.substring(0, 8)} state updated to: ${state}`);
+    }
+
+    getPlayerState(playerId) {
+        return this.playerStates.get(playerId) || 'waiting';
+    }
+
+    findPlayerByEmail(email) {
+        for (let [playerId, playerEmail] of this.participantEmails.entries()) {
+            if (playerEmail === email) {
+                return this.players.find(p => p.id === playerId);
+            }
+        }
+        return null;
     }
 
     calculatePayoffs() {
@@ -255,10 +334,99 @@ function findOrCreateRoom() {
     return room;
 }
 
+function findExistingPlayerSession(email) {
+    // Look for existing player session by email
+    for (let [persistentKey, playerData] of persistentPlayers.entries()) {
+        if (playerData.email === email) {
+            const room = rooms.get(playerData.roomId);
+            if (room && room.status !== 'empty') {
+                return { room, playerId: playerData.playerId, playerData };
+            }
+        }
+    }
+    return null;
+}
+
+function findActiveRoomsWithDisconnectedPlayer(email) {
+    // Find rooms where this email exists but player is disconnected
+    for (let room of rooms.values()) {
+        if (room.status !== 'empty' && room.status !== 'waiting') {
+            const existingPlayer = room.findPlayerByEmail(email);
+            if (existingPlayer && room.disconnectedPlayers.has(existingPlayer.id)) {
+                return { room, playerId: existingPlayer.id };
+            }
+        }
+    }
+    return null;
+}
+
 io.on('connection', (socket) => {
     console.log('New player connected:', socket.id);
 
     socket.on('join-game', (playerData) => {
+        const email = playerData.email || '';
+        
+        // Check for existing disconnected player first
+        const existingDisconnected = findActiveRoomsWithDisconnectedPlayer(email);
+        
+        if (existingDisconnected) {
+            // RECONNECTION CASE - player is reconnecting to existing game
+            const { room, playerId } = existingDisconnected;
+            
+            console.log(`🔄 Reconnecting player ${playerId.substring(0, 8)} to room ${room.id.substring(0, 8)}`);
+            
+            // Reconnect the player
+            if (room.addPlayer(playerId, socket, true)) {
+                socket.join(room.id);
+                players.set(socket.id, { playerId, roomId: room.id });
+                
+                // Get player's current state
+                const currentState = room.getPlayerState(playerId);
+                const playerNumber = room.players.findIndex(p => p.id === playerId) + 1;
+                
+                console.log(`📍 Player reconnected to state: ${currentState}`);
+                
+                // Send reconnection data
+                socket.emit('player-reconnected', {
+                    playerId,
+                    roomId: room.id,
+                    playerNumber,
+                    playersCount: room.getConnectedPlayersCount(),
+                    condition: room.conditions.get(playerId),
+                    currentState,
+                    existingData: {
+                        name: room.participantNames.get(playerId),
+                        email: room.participantEmails.get(playerId),
+                        consent: room.consentGiven.get(playerId),
+                        demographics: room.demographics.get(playerId),
+                        contribution: room.contributions.get(playerId),
+                        comprehension: room.comprehensionAnswers.get(playerId)
+                    }
+                });
+                
+                // Notify other players about reconnection
+                room.players.forEach(player => {
+                    if (player.id !== playerId) {
+                        player.socket.emit('player-reconnected-notification', {
+                            message: 'Ayrılan oyuncu geri döndü!',
+                            connectedPlayers: room.getConnectedPlayersCount()
+                        });
+                    }
+                });
+                
+                // Log reconnection
+                db.run(`INSERT INTO interactions (id, player_id, group_id, action_type, action_data) 
+                        VALUES (?, ?, ?, ?, ?)`,
+                    [uuidv4(), playerId, room.id, 'player_reconnected', JSON.stringify({
+                        reconnectionTime: new Date().toISOString(),
+                        previousState: currentState
+                    })]);
+                
+                return; // Exit early for reconnection case
+            }
+        }
+        
+        // NEW PLAYER CASE - no existing session found
         const playerId = uuidv4();
         const room = findOrCreateRoom();
 
@@ -268,10 +436,19 @@ io.on('connection', (socket) => {
 
             // Store participant data
             room.participantNames.set(playerId, playerData.name || 'Anonymous');
-            room.participantEmails.set(playerId, playerData.email || '');
+            room.participantEmails.set(playerId, email);
             room.userAgents.set(playerId, socket.handshake.headers['user-agent'] || '');
             room.ipAddresses.set(playerId, socket.handshake.address || socket.conn.remoteAddress || '');
             room.timestamps.set(playerId, { joined: new Date().toISOString() });
+            
+            // Store in persistent players map
+            const persistentKey = `${email}_${room.id}`;
+            persistentPlayers.set(persistentKey, {
+                playerId,
+                roomId: room.id,
+                email,
+                name: playerData.name
+            });
 
             // If room is now full, assign balanced conditions immediately
             if (room.isFull()) {
@@ -339,6 +516,7 @@ io.on('connection', (socket) => {
         if (!room) return;
 
         room.consentGiven.set(playerInfo.playerId, data.consentGiven);
+        room.updatePlayerState(playerInfo.playerId, 'demographics');
         
         // Update timestamp
         const timestamps = room.timestamps.get(playerInfo.playerId) || {};
@@ -365,6 +543,7 @@ io.on('connection', (socket) => {
         if (!room) return;
 
         room.demographics.set(playerInfo.playerId, data);
+        room.updatePlayerState(playerInfo.playerId, 'waiting-experiment');
         
         // Update timestamp
         const timestamps = room.timestamps.get(playerInfo.playerId) || {};
@@ -388,6 +567,7 @@ io.on('connection', (socket) => {
                     const timestamps = room.timestamps.get(player.id) || {};
                     timestamps.instructionsStart = new Date().toISOString();
                     room.timestamps.set(player.id, timestamps);
+                    room.updatePlayerState(player.id, 'instructions');
                 });
                 console.log(`📝 Broadcasting start-instructions-phase to all players in room ${room.id.substring(0, 8)}`);
                 room.broadcast('start-instructions-phase', {});
@@ -417,6 +597,7 @@ io.on('connection', (socket) => {
 
         // Mark this player as ready
         room.readyPlayers.add(playerInfo.playerId);
+        room.updatePlayerState(playerInfo.playerId, 'waiting-group-start');
         
         console.log(`✅ Player ${playerInfo.playerId.substring(0, 8)} is ready. Total ready: ${room.readyPlayers.size}/4`);
 
@@ -437,6 +618,7 @@ io.on('connection', (socket) => {
             room.status = 'playing';
             room.players.forEach(player => {
                 const condition = room.conditions.get(player.id);
+                room.updatePlayerState(player.id, 'contribution');
                 player.socket.emit('start-contribution-phase', { 
                     condition: condition,
                     timeLimit: condition === 'time_pressure' ? 10 : null,
@@ -457,6 +639,7 @@ io.on('connection', (socket) => {
                             // Auto-submit with 0 contribution (default value)
                             room.contributions.set(player.id, 0);
                             room.decisionTimes.set(player.id, 10000); // Exactly 10 seconds
+                            room.updatePlayerState(player.id, 'waiting-others');
                             
                             // Update timestamp
                             const timestamps = room.timestamps.get(player.id) || {};
@@ -489,6 +672,7 @@ io.on('connection', (socket) => {
                             // Check if all players have now contributed
                             if (room.allPlayersContributed()) {
                                 room.status = 'comprehension';
+                                room.players.forEach(p => room.updatePlayerState(p.id, 'comprehension'));
                                 setTimeout(() => {
                                     room.broadcast('start-comprehension-phase', {});
                                 }, 1000);
@@ -531,6 +715,7 @@ io.on('connection', (socket) => {
 
         room.contributions.set(playerInfo.playerId, data.contribution);
         room.decisionTimes.set(playerInfo.playerId, decisionTime);
+        room.updatePlayerState(playerInfo.playerId, 'waiting-others');
 
         // Update timestamp
         const timestamps = room.timestamps.get(playerInfo.playerId) || {};
@@ -557,6 +742,7 @@ io.on('connection', (socket) => {
         // Check if all players contributed
         if (room.allPlayersContributed()) {
             room.status = 'comprehension';
+            room.players.forEach(p => room.updatePlayerState(p.id, 'comprehension'));
             setTimeout(() => {
                 room.broadcast('start-comprehension-phase', {});
             }, 1000);
@@ -572,6 +758,7 @@ io.on('connection', (socket) => {
 
         room.comprehensionAnswers.set(playerInfo.playerId, data);
         room.comprehensionCompleted.set(playerInfo.playerId, true);
+        room.updatePlayerState(playerInfo.playerId, 'waiting-comprehension');
 
         // Update timestamp
         const timestamps = room.timestamps.get(playerInfo.playerId) || {};
@@ -598,6 +785,7 @@ io.on('connection', (socket) => {
                 
                 // Send results to each player
                 room.players.forEach(player => {
+                    room.updatePlayerState(player.id, 'results');
                     const playerPayoff = payoffs.get(player.id);
                     const allContributions = Array.from(room.contributions.values());
                     
@@ -625,6 +813,8 @@ io.on('connection', (socket) => {
         const room = rooms.get(playerInfo.roomId);
         if (!room) return;
 
+        room.updatePlayerState(playerInfo.playerId, 'final');
+
         // Update completion timestamp
         const timestamps = room.timestamps.get(playerInfo.playerId) || {};
         timestamps.completion = new Date().toISOString();
@@ -647,19 +837,33 @@ io.on('connection', (socket) => {
         if (playerInfo) {
             const room = rooms.get(playerInfo.roomId);
             if (room) {
-                room.removePlayer(playerInfo.playerId);
+                // Use graceful disconnection instead of immediate removal
+                room.markPlayerDisconnected(playerInfo.playerId);
                 
-                // Notify other players
-                if (room.players.length > 0) {
-                    room.broadcast('player-disconnected', {
-                        playersCount: room.players.length,
-                        message: 'Bir oyuncu ayrıldı. Deney iptal edilebilir.'
+                // Notify other connected players
+                const connectedCount = room.getConnectedPlayersCount();
+                if (connectedCount > 0) {
+                    room.players.forEach(player => {
+                        if (!room.disconnectedPlayers.has(player.id)) {
+                            player.socket.emit('player-disconnected', {
+                                playersCount: connectedCount,
+                                totalPlayers: room.players.length,
+                                message: 'Bir oyuncu bağlantısı kesildi. 5 dakika içinde geri dönebilir.'
+                            });
+                        }
                     });
                 }
                 
-                // Clean up empty rooms
+                // Clean up empty rooms only if no players left at all
                 if (room.status === 'empty') {
                     rooms.delete(playerInfo.roomId);
+                    
+                    // Clean up persistent players for this room
+                    for (let [key, data] of persistentPlayers.entries()) {
+                        if (data.roomId === playerInfo.roomId) {
+                            persistentPlayers.delete(key);
+                        }
+                    }
                 }
             }
             players.delete(socket.id);
