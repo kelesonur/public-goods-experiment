@@ -350,7 +350,7 @@ function findExistingPlayerSession(email) {
 function findActiveRoomsWithDisconnectedPlayer(email) {
     // Find rooms where this email exists but player is disconnected
     for (let room of rooms.values()) {
-        if (room.status !== 'empty' && room.status !== 'waiting') {
+        if (room.status !== 'empty') {
             const existingPlayer = room.findPlayerByEmail(email);
             if (existingPlayer && room.disconnectedPlayers.has(existingPlayer.id)) {
                 return { room, playerId: existingPlayer.id };
@@ -373,15 +373,45 @@ io.on('connection', (socket) => {
             // RECONNECTION CASE - player is reconnecting to existing game
             const { room, playerId } = existingDisconnected;
             
-            console.log(`🔄 Reconnecting player ${playerId.substring(0, 8)} to room ${room.id.substring(0, 8)}`);
+            console.log(`🔄 Reconnecting player ${playerId.substring(0, 8)} to room ${room.id.substring(0, 8)} (room status: ${room.status})`);
             
             // Reconnect the player
             if (room.addPlayer(playerId, socket, true)) {
                 socket.join(room.id);
                 players.set(socket.id, { playerId, roomId: room.id });
                 
-                // Get player's current state
-                const currentState = room.getPlayerState(playerId);
+                // Get player's current state (default to room status if no specific state)
+                let currentState = room.getPlayerState(playerId);
+                if (!currentState || currentState === 'waiting') {
+                    // Map room status to appropriate player state
+                    switch (room.status) {
+                        case 'waiting':
+                            currentState = 'waiting';
+                            break;
+                        case 'consent':
+                            currentState = 'consent';
+                            break;
+                        case 'demographics':
+                            currentState = 'demographics';
+                            break;
+                        case 'instructions':
+                            currentState = 'instructions';
+                            break;
+                        case 'playing':
+                            currentState = 'contribution';
+                            break;
+                        case 'comprehension':
+                            currentState = 'comprehension';
+                            break;
+                        case 'results':
+                            currentState = 'results';
+                            break;
+                        default:
+                            currentState = 'waiting';
+                    }
+                    room.updatePlayerState(playerId, currentState);
+                }
+                
                 const playerNumber = room.players.findIndex(p => p.id === playerId) + 1;
                 
                 console.log(`📍 Player reconnected to state: ${currentState}`);
@@ -394,6 +424,7 @@ io.on('connection', (socket) => {
                     playersCount: room.getConnectedPlayersCount(),
                     condition: room.conditions.get(playerId),
                     currentState,
+                    roomStatus: room.status,
                     existingData: {
                         name: room.participantNames.get(playerId),
                         email: room.participantEmails.get(playerId),
@@ -404,9 +435,9 @@ io.on('connection', (socket) => {
                     }
                 });
                 
-                // Notify other players about reconnection
+                // Notify other connected players about reconnection
                 room.players.forEach(player => {
-                    if (player.id !== playerId) {
+                    if (player.id !== playerId && !room.disconnectedPlayers.has(player.id)) {
                         player.socket.emit('player-reconnected-notification', {
                             message: 'Ayrılan oyuncu geri döndü!',
                             connectedPlayers: room.getConnectedPlayersCount()
@@ -414,15 +445,25 @@ io.on('connection', (socket) => {
                     }
                 });
                 
+                // Update player counts for waiting screen
+                if (room.status === 'waiting') {
+                    room.broadcast('player-count-update', { playersCount: room.getConnectedPlayersCount() });
+                }
+                
                 // Log reconnection
                 db.run(`INSERT INTO interactions (id, player_id, group_id, action_type, action_data) 
                         VALUES (?, ?, ?, ?, ?)`,
                     [uuidv4(), playerId, room.id, 'player_reconnected', JSON.stringify({
                         reconnectionTime: new Date().toISOString(),
-                        previousState: currentState
+                        previousState: currentState,
+                        roomStatus: room.status,
+                        email: email
                     })]);
                 
+                console.log(`✅ Player ${playerId.substring(0, 8)} successfully reconnected to ${currentState}`);
                 return; // Exit early for reconnection case
+            } else {
+                console.log(`❌ Failed to reconnect player ${playerId.substring(0, 8)} to room ${room.id.substring(0, 8)}`);
             }
         }
         

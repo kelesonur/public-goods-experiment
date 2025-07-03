@@ -12,7 +12,8 @@ let gameState = {
     countdownInterval: null,
     waitTimerInterval: null,
     consentCompleted: false,
-    demographicsCompleted: false
+    demographicsCompleted: false,
+    isReconnected: false
 };
 
 // DOM Elements
@@ -115,6 +116,13 @@ function updateComprehensionStatus(data) {
 
 // Socket event handlers
 socket.on('joined-room', (data) => {
+    // Don't process if we've already reconnected
+    if (gameState.isReconnected) {
+        console.log('🔄 Ignoring joined-room event - already reconnected');
+        return;
+    }
+    
+    console.log('🆕 New player joining room:', data);
     gameState.playerId = data.playerId;
     gameState.roomId = data.roomId;
     gameState.playerNumber = data.playerNumber;
@@ -345,6 +353,7 @@ socket.on('player-disconnected', (data) => {
 // NEW RECONNECTION HANDLERS
 socket.on('player-reconnected', (data) => {
     console.log('🔄 Reconnecting to existing session:', data);
+    console.log(`📍 Room status: ${data.roomStatus}, Player state: ${data.currentState}`);
     
     // Update game state with restored data
     gameState.playerId = data.playerId;
@@ -412,6 +421,10 @@ socket.on('player-reconnected', (data) => {
     
     // Restore to correct screen based on current state
     restorePlayerToCorrectScreen(data.currentState, data);
+    
+    // Mark as reconnected to prevent processing other join events
+    gameState.isReconnected = true;
+    console.log('✅ Reconnection complete');
 });
 
 socket.on('player-reconnected-notification', (data) => {
