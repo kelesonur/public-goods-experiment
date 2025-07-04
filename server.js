@@ -261,7 +261,7 @@ class GameRoom {
             const creditsWon = Math.floor(kept + equalShare);
             // Calculate lottery tickets based on credit ranges
             let lotteryTickets;
-            if (creditsWon >= 25) {
+            if (creditsWon >= 21) {
                 lotteryTickets = 3;
             } else if (creditsWon >= 15) {
                 lotteryTickets = 2;
