@@ -352,10 +352,10 @@
                         <td title="${session.player_id}">${playerId}</td>
                         <td title="${session.group_id}">${groupId}</td>
                         <td>${session.condition || '-'}</td>
-                        <td>${session.contribution || '-'}</td>
-                        <td>${session.decision_time || '-'}</td>
-                        <td>${session.credits_won || '-'}</td>
-                        <td>${session.lottery_tickets || '-'}</td>
+                        <td>${session.contribution != null ? session.contribution : '-'}</td>
+                        <td>${session.decision_time != null ? session.decision_time : '-'}</td>
+                        <td>${session.credits_won != null ? session.credits_won : '-'}</td>
+                        <td>${session.lottery_tickets != null ? session.lottery_tickets : '-'}</td>
                         <td>${session.age || '-'}</td>
                         <td>${session.gender || '-'}</td>
                         <td>${session.major || '-'}</td>
@@ -394,7 +394,7 @@
                             if (typeof value === 'string' && (value.includes(',') || value.includes('"'))) {
                                 return `"${value.replace(/"/g, '""')}"`;
                             }
-                            return value || '';
+                            return value != null ? value : '';
                         }).join(',')
                     )
                 ].join('\n');
