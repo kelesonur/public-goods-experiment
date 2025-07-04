@@ -943,7 +943,7 @@ io.on('connection', (socket) => {
                             player.socket.emit('player-disconnected', {
                                 playersCount: connectedCount,
                                 totalPlayers: room.players.length,
-                                message: 'Bir oyuncu bağlantısı kesildi. 5 dakika içinde geri dönebilir.'
+                                message: 'Bir oyuncu bağlantısı kesildi. 3 dakika içinde geri dönebilir.'
                             });
                         }
                     });
