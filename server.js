@@ -16,8 +16,41 @@ const io = socketIo(server, {
 });
 
 app.use(cors());
-app.use(express.static('public'));
 app.use(express.json());
+
+// Basic authentication middleware for admin routes
+function basicAuth(req, res, next) {
+    const auth = req.headers.authorization;
+    
+    if (!auth) {
+        res.setHeader('WWW-Authenticate', 'Basic realm="Admin Panel"');
+        return res.status(401).json({ error: 'Authentication required' });
+    }
+    
+    const credentials = Buffer.from(auth.split(' ')[1], 'base64').toString().split(':');
+    const username = credentials[0];
+    const password = credentials[1];
+    
+    if (username === 'admin' && password === '3cl2025') {
+        next();
+    } else {
+        res.setHeader('WWW-Authenticate', 'Basic realm="Admin Panel"');
+        return res.status(401).json({ error: 'Invalid credentials' });
+    }
+}
+
+// Serve admin.html with authentication
+app.get('/admin.html', basicAuth, (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'admin.html'));
+});
+
+// Serve analytics.html with authentication
+app.get('/analytics.html', basicAuth, (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'analytics.html'));
+});
+
+// Serve other static files normally
+app.use(express.static('public'));
 
 // Initialize SQLite database
 const db = new sqlite3.Database('experiment_data.db');
@@ -1035,8 +1068,8 @@ function saveSessionData(room, payoffs) {
     console.log(`Session completed for room ${room.id}. Total contribution: ${totalContribution} credits`);
 }
 
-// API Routes for data export and admin functionality
-app.get('/api/export-data', (req, res) => {
+// API Routes for data export and admin functionality (protected with authentication)
+app.get('/api/export-data', basicAuth, (req, res) => {
     db.all(`SELECT s.*, g.total_contribution, g.avg_decision_time, g.completion_rate, g.end_time as group_end_time
             FROM sessions s 
             LEFT JOIN groups g ON s.group_id = g.id 
@@ -1050,7 +1083,7 @@ app.get('/api/export-data', (req, res) => {
     });
 });
 
-app.delete('/api/delete-all-data', (req, res) => {
+app.delete('/api/delete-all-data', basicAuth, (req, res) => {
     db.serialize(() => {
         db.run('DELETE FROM sessions');
         db.run('DELETE FROM groups');
@@ -1063,7 +1096,7 @@ app.delete('/api/delete-all-data', (req, res) => {
 });
 
 // API endpoints for data export and analysis
-app.get('/api/export-interactions', (req, res) => {
+app.get('/api/export-interactions', basicAuth, (req, res) => {
     db.all('SELECT * FROM interactions ORDER BY timestamp DESC', (err, rows) => {
         if (err) {
             res.status(500).json({ error: err.message });
@@ -1073,7 +1106,7 @@ app.get('/api/export-interactions', (req, res) => {
     });
 });
 
-app.get('/api/export-groups', (req, res) => {
+app.get('/api/export-groups', basicAuth, (req, res) => {
     db.all('SELECT * FROM groups ORDER BY created_at DESC', (err, rows) => {
         if (err) {
             res.status(500).json({ error: err.message });
@@ -1083,7 +1116,7 @@ app.get('/api/export-groups', (req, res) => {
     });
 });
 
-app.get('/api/stats', (req, res) => {
+app.get('/api/stats', basicAuth, (req, res) => {
     db.all(`
         SELECT 
             COUNT(*) as totalSessions,
@@ -1104,7 +1137,7 @@ app.get('/api/stats', (req, res) => {
     });
 });
 
-app.get('/api/correlation-analysis', (req, res) => {
+app.get('/api/correlation-analysis', basicAuth, (req, res) => {
     db.all(`
         SELECT 
             decision_time,
@@ -1124,7 +1157,7 @@ app.get('/api/correlation-analysis', (req, res) => {
     });
 });
 
-app.get('/api/group-analysis', (req, res) => {
+app.get('/api/group-analysis', basicAuth, (req, res) => {
     db.all(`
         SELECT 
             group_id,
