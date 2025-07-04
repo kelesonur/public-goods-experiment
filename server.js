@@ -33,6 +33,8 @@ db.serialize(() => {
         condition TEXT,
         consent_given BOOLEAN,
         contribution INTEGER,
+        intended_contribution INTEGER,
+        timed_out BOOLEAN DEFAULT 0,
         decision_time INTEGER,
         credits_won INTEGER,
         lottery_tickets INTEGER,
@@ -74,6 +76,14 @@ db.serialize(() => {
         action_data TEXT,
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
+    
+    // Add new columns to existing sessions table if they don't exist
+    db.run(`ALTER TABLE sessions ADD COLUMN intended_contribution INTEGER`, (err) => {
+        // Ignore error if column already exists
+    });
+    db.run(`ALTER TABLE sessions ADD COLUMN timed_out BOOLEAN DEFAULT 0`, (err) => {
+        // Ignore error if column already exists
+    });
 });
 
 // Game state management
@@ -90,6 +100,8 @@ class GameRoom {
         this.demographics = new Map();
         this.conditions = new Map(); // 'time_pressure' or 'time_delay'
         this.contributions = new Map();
+        this.intendedContributions = new Map(); // Track slider values before timeout
+        this.timeoutStatus = new Map(); // Track which players timed out
         this.decisionTimes = new Map();
         this.comprehensionAnswers = new Map();
         this.comprehensionCompleted = new Map();
@@ -163,6 +175,8 @@ class GameRoom {
         this.demographics.delete(playerId);
         this.conditions.delete(playerId);
         this.contributions.delete(playerId);
+        this.intendedContributions.delete(playerId);
+        this.timeoutStatus.delete(playerId);
         this.decisionTimes.delete(playerId);
         this.comprehensionAnswers.delete(playerId);
         this.comprehensionCompleted.delete(playerId);
@@ -677,8 +691,13 @@ io.on('connection', (socket) => {
                         if (!room.contributions.has(player.id) && room.status === 'playing') {
                             console.log(`⏱️ Auto-submitting for time_pressure player ${player.id.substring(0, 8)} - time expired`);
                             
-                            // Auto-submit with 0 contribution (default value)
+                            // Get intended contribution (slider value) or default to 0
+                            const intendedContribution = room.intendedContributions.get(player.id) || 0;
+                            
+                            // Auto-submit with 0 contribution (policy), but track intended
                             room.contributions.set(player.id, 0);
+                            room.intendedContributions.set(player.id, intendedContribution);
+                            room.timeoutStatus.set(player.id, true); // Mark as timed out
                             room.decisionTimes.set(player.id, 10000); // Exactly 10 seconds
                             room.updatePlayerState(player.id, 'waiting-others');
                             
@@ -697,7 +716,7 @@ io.on('connection', (socket) => {
                                     reason: 'time_expired'
                                 })]);
                             
-                            console.log(`Player ${player.id} auto-contributed 0 credits due to timeout (time_pressure)`);
+                            console.log(`Player ${player.id} auto-contributed 0 credits due to timeout (time_pressure) - intended: ${intendedContribution}`);
                             
                             // Notify the player
                             player.socket.emit('contribution-auto-submitted', { 
@@ -729,6 +748,18 @@ io.on('connection', (socket) => {
         }
     });
 
+    // Track intended contribution (slider value changes)
+    socket.on('update-intended-contribution', (data) => {
+        const playerInfo = players.get(socket.id);
+        if (!playerInfo) return;
+
+        const room = rooms.get(playerInfo.roomId);
+        if (!room || room.status !== 'playing') return;
+
+        // Store the current slider value as intended contribution
+        room.intendedContributions.set(playerInfo.playerId, data.intendedContribution);
+    });
+
     socket.on('submit-contribution', (data) => {
         const playerInfo = players.get(socket.id);
         if (!playerInfo) return;
@@ -755,6 +786,8 @@ io.on('connection', (socket) => {
         }
 
         room.contributions.set(playerInfo.playerId, data.contribution);
+        room.intendedContributions.set(playerInfo.playerId, data.contribution); // Same as actual for manual submissions
+        room.timeoutStatus.set(playerInfo.playerId, false); // Not timed out
         room.decisionTimes.set(playerInfo.playerId, decisionTime);
         room.updatePlayerState(playerInfo.playerId, 'waiting-others');
 
@@ -813,7 +846,28 @@ io.on('connection', (socket) => {
 
         console.log(`Player ${playerInfo.playerId} answered comprehension questions`);
 
-        socket.emit('comprehension-received', { success: true });
+        // Check comprehension answers and provide feedback
+        const correctAnswers = {
+            q1: '10',
+            q2: 'depends'
+        };
+        
+        const feedback = {
+            q1: {
+                userAnswer: data.q1,
+                correct: data.q1 === correctAnswers.q1,
+                correctAnswer: correctAnswers.q1,
+                explanation: 'Herkes 10 kredi katkıda bulunursa grup geneli için en yüksek kazancı sağlar (toplam 80 kredi).'
+            },
+            q2: {
+                userAnswer: data.q2,
+                correct: data.q2 === correctAnswers.q2,
+                correctAnswer: correctAnswers.q2,
+                explanation: 'Kişisel olarak en yüksek kazancınız diğerlerinin katkısına bağlıdır - eğer herkes katkıda bulunur ama siz bulunmazsanız en fazla kazanırsınız.'
+            }
+        };
+
+        socket.emit('comprehension-feedback', { feedback });
 
         // Broadcast status to all players
         room.broadcastComprehensionStatus();
@@ -929,12 +983,12 @@ function saveSessionData(room, payoffs) {
 
         db.run(`INSERT INTO sessions (
             id, player_id, group_id, participant_name, participant_email, condition, consent_given,
-            contribution, decision_time, credits_won, lottery_tickets,
+            contribution, intended_contribution, timed_out, decision_time, credits_won, lottery_tickets,
             comprehension_q1, comprehension_q2, age, gender, major,
             instructions_time, consent_timestamp, demographics_timestamp,
             contribution_timestamp, comprehension_timestamp, completion_timestamp,
             user_agent, ip_address, session_duration, browser_info, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
             uuidv4(), player.id, room.id, 
             room.participantNames.get(player.id),
@@ -942,6 +996,8 @@ function saveSessionData(room, payoffs) {
             condition,
             consent ? 1 : 0,
             room.contributions.get(player.id),
+            room.intendedContributions.get(player.id),
+            room.timeoutStatus.get(player.id) ? 1 : 0,
             room.decisionTimes.get(player.id),
             playerPayoff.creditsWon,
             playerPayoff.lotteryTickets,

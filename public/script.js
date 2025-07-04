@@ -727,6 +727,11 @@ contributionSlider.addEventListener('input', (e) => {
     contributionValue.textContent = contribution;
     previewContribution.textContent = contribution + ' Kredi';
     previewRemaining.textContent = remaining + ' Kredi';
+    
+    // Send intended contribution to server for timeout tracking
+    socket.emit('update-intended-contribution', {
+        intendedContribution: contribution
+    });
 });
 
 document.getElementById('submit-contribution-btn').addEventListener('click', () => {
@@ -771,6 +776,79 @@ document.getElementById('submit-comprehension-btn').addEventListener('click', ()
         q2: q2.value
     });
 });
+
+// Handle comprehension feedback
+socket.on('comprehension-feedback', (data) => {
+    displayComprehensionFeedback(data.feedback);
+});
+
+// Display comprehension feedback
+function displayComprehensionFeedback(feedback) {
+    // Hide the submit button and show feedback
+    const submitBtn = document.getElementById('submit-comprehension-btn');
+    submitBtn.style.display = 'none';
+    
+    // Create feedback container
+    const feedbackContainer = document.createElement('div');
+    feedbackContainer.className = 'comprehension-feedback';
+    feedbackContainer.innerHTML = `
+        <h3>📋 Cevap Geri Bildirimi</h3>
+        <div class="feedback-questions">
+            <div class="feedback-item ${feedback.q1.correct ? 'correct' : 'incorrect'}">
+                <div class="feedback-header">
+                    <span class="feedback-icon">${feedback.q1.correct ? '✅' : '❌'}</span>
+                    <span class="feedback-title">Soru 1: ${feedback.q1.correct ? 'Doğru' : 'Yanlış'}</span>
+                </div>
+                <div class="feedback-details">
+                    <p><strong>Sizin cevabınız:</strong> ${getAnswerText('q1', feedback.q1.userAnswer)}</p>
+                    ${!feedback.q1.correct ? `<p><strong>Doğru cevap:</strong> ${getAnswerText('q1', feedback.q1.correctAnswer)}</p>` : ''}
+                    <p class="feedback-explanation">${feedback.q1.explanation}</p>
+                </div>
+            </div>
+            
+            <div class="feedback-item ${feedback.q2.correct ? 'correct' : 'incorrect'}">
+                <div class="feedback-header">
+                    <span class="feedback-icon">${feedback.q2.correct ? '✅' : '❌'}</span>
+                    <span class="feedback-title">Soru 2: ${feedback.q2.correct ? 'Doğru' : 'Yanlış'}</span>
+                </div>
+                <div class="feedback-details">
+                    <p><strong>Sizin cevabınız:</strong> ${getAnswerText('q2', feedback.q2.userAnswer)}</p>
+                    ${!feedback.q2.correct ? `<p><strong>Doğru cevap:</strong> ${getAnswerText('q2', feedback.q2.correctAnswer)}</p>` : ''}
+                    <p class="feedback-explanation">${feedback.q2.explanation}</p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="feedback-summary">
+            <p><strong>Toplam doğru cevap:</strong> ${(feedback.q1.correct ? 1 : 0) + (feedback.q2.correct ? 1 : 0)} / 2</p>
+            <p class="waiting-message">Diğer oyuncuların cevapları bekleniyor...</p>
+        </div>
+    `;
+    
+    // Add feedback container after the questions
+    const questionGroup = document.querySelector('.question-group');
+    questionGroup.parentNode.insertBefore(feedbackContainer, questionGroup.nextSibling);
+}
+
+// Helper function to convert answer values to readable text
+function getAnswerText(questionNumber, value) {
+    const answerMap = {
+        'q1': {
+            '0': 'Herkes 0 kredi katkıda bulunursa',
+            '5': 'Herkes 5 kredi katkıda bulunursa',
+            '10': 'Herkes 10 kredi katkıda bulunursa',
+            'varying': 'Diğerlerinin katkısına bağlı'
+        },
+        'q2': {
+            '0': '0 kredi katkıda bulunursanız',
+            '5': '5 kredi katkıda bulunursanız',
+            '10': '10 kredi katkıda bulunursanız',
+            'depends': 'Diğerlerinin katkısına bağlı'
+        }
+    };
+    
+    return answerMap[questionNumber][value] || value;
+}
 
 // Results display
 function displayResults(data) {

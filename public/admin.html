@@ -195,6 +195,8 @@
                             <th>Grup ID</th>
                             <th>Koşul</th>
                             <th>Katkı</th>
+                            <th>İstenen Katkı</th>
+                            <th>Zaman Aşımı</th>
                             <th>Karar Süresi (ms)</th>
                             <th>Kredi Kazancı</th>
                             <th>Çekiliş Bileti</th>
@@ -353,6 +355,8 @@
                         <td title="${session.group_id}">${groupId}</td>
                         <td>${session.condition || '-'}</td>
                         <td>${session.contribution != null ? session.contribution : '-'}</td>
+                        <td>${session.intended_contribution != null ? session.intended_contribution : '-'}</td>
+                        <td>${session.timed_out ? 'Evet' : (session.timed_out === 0 ? 'Hayır' : '-')}</td>
                         <td>${session.decision_time != null ? session.decision_time : '-'}</td>
                         <td>${session.credits_won != null ? session.credits_won : '-'}</td>
                         <td>${session.lottery_tickets != null ? session.lottery_tickets : '-'}</td>
