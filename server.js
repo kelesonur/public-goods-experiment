@@ -331,16 +331,25 @@ class GameRoom {
     }
 
     broadcast(event, data) {
+        const connectedPlayers = [];
+        const skippedPlayers = [];
+        
         this.players.forEach(player => {
             // Only send to connected players
             if (player.socket && !this.disconnectedPlayers.has(player.id)) {
                 try {
                     player.socket.emit(event, data);
+                    connectedPlayers.push(player.id.substring(0, 8));
                 } catch (err) {
                     console.log(`❌ Failed to broadcast to player ${player.id.substring(0, 8)}: ${err.message}`);
+                    skippedPlayers.push(player.id.substring(0, 8));
                 }
+            } else {
+                skippedPlayers.push(player.id.substring(0, 8) + ' (disconnected)');
             }
         });
+        
+        console.log(`📡 Broadcast ${event} → Sent to: [${connectedPlayers.join(', ')}]${skippedPlayers.length > 0 ? ` | Skipped: [${skippedPlayers.join(', ')}]` : ''}`);
     }
 
     broadcastConsentStatus() {
@@ -911,6 +920,49 @@ io.on('connection', (socket) => {
                     }
                 });
             }, 1000);
+        }
+    });
+
+    // Handle state sync requests from stuck clients
+    socket.on('request-state-sync', (data) => {
+        const playerInfo = players.get(socket.id);
+        if (!playerInfo) return;
+
+        const room = rooms.get(playerInfo.roomId);
+        if (!room) return;
+
+        console.log(`🔄 State sync request from player ${playerInfo.playerId.substring(0, 8)}: client thinks they're on ${data.currentScreen}, room status is ${room.status}`);
+        
+        // Determine correct state and send appropriate event
+        const hasContributed = room.contributions.has(playerInfo.playerId);
+        const hasAnsweredComprehension = room.comprehensionCompleted.has(playerInfo.playerId);
+        
+        if (room.status === 'comprehension' && hasContributed && !hasAnsweredComprehension) {
+            console.log(`📬 Sending missed comprehension phase to player ${playerInfo.playerId.substring(0, 8)}`);
+            socket.emit('start-comprehension-phase', {});
+        } else if (room.status === 'results' && hasAnsweredComprehension) {
+            console.log(`📬 Sending missed results to player ${playerInfo.playerId.substring(0, 8)}`);
+            const payoffs = room.calculatePayoffs();
+            const playerPayoff = payoffs.get(playerInfo.playerId);
+            const allContributions = Array.from(room.contributions.values());
+            
+            socket.emit('game-results', {
+                yourContribution: playerPayoff.contribution,
+                yourKept: playerPayoff.kept,
+                yourShare: playerPayoff.equalShare,
+                yourCreditsWon: playerPayoff.creditsWon,
+                yourLotteryTickets: playerPayoff.lotteryTickets,
+                allContributions: allContributions,
+                totalPool: allContributions.reduce((sum, c) => sum + c, 0) * 2
+            });
+        } else if (room.status === 'playing' && !hasContributed) {
+            console.log(`📬 Sending missed contribution phase to player ${playerInfo.playerId.substring(0, 8)}`);
+            const condition = room.conditions.get(playerInfo.playerId);
+            socket.emit('start-contribution-phase', { 
+                condition: condition,
+                timeLimit: condition === 'time_pressure' ? 10 : null,
+                minTime: condition === 'time_delay' ? 10 : null
+            });
         }
     });
 

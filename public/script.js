@@ -36,6 +36,9 @@ const screens = {
 
 // Utility functions
 function showScreen(screenName) {
+    const previousScreen = gameState.currentScreen;
+    console.log(`🎬 Screen transition: ${previousScreen} → ${screenName}`);
+    
     // Hide all screens
     Object.values(screens).forEach(screen => {
         if (screen) screen.classList.remove('active');
@@ -45,6 +48,9 @@ function showScreen(screenName) {
     if (screens[screenName]) {
         screens[screenName].classList.add('active');
         gameState.currentScreen = screenName;
+        console.log(`✅ Successfully showed screen: ${screenName}`);
+    } else {
+        console.error(`❌ Screen not found: ${screenName}`);
     }
 
     // Clear any running timers when switching screens
@@ -269,12 +275,43 @@ socket.on('contribution-rejected', (data) => {
 });
 
 socket.on('waiting-for-others', (data) => {
+    console.log(`📊 Waiting for others: ${data.completedPlayers}/4 players completed`);
     updateCompletedPlayers(data.completedPlayers);
+    
+    // Safety mechanism: If we're showing 4/4 but not moving to comprehension
+    // Add a fallback timer to check for transition
+    if (data.completedPlayers === 4 && gameState.currentScreen === 'waitingOthers') {
+        console.log('⚠️ All 4 players completed, setting fallback timer for comprehension transition');
+        setTimeout(() => {
+            if (gameState.currentScreen === 'waitingOthers') {
+                console.log('🚨 FALLBACK: Still stuck in waiting screen after 3 seconds, requesting state sync');
+                requestGameStateSync();
+                
+                // If state sync doesn't work, force transition after another 2 seconds
+                setTimeout(() => {
+                    if (gameState.currentScreen === 'waitingOthers') {
+                        console.log('🚨 EMERGENCY: State sync failed, forcing transition to comprehension');
+                        showScreen('comprehension');
+                    }
+                }, 2000);
+            }
+        }, 3000); // 3 second fallback
+    }
 });
 
 socket.on('start-comprehension-phase', () => {
+    console.log('📢 Received start-comprehension-phase event');
     showScreen('comprehension');
 });
+
+// Add a mechanism to request current game state if player gets stuck
+function requestGameStateSync() {
+    console.log('🔄 Requesting game state sync from server');
+    socket.emit('request-state-sync', { 
+        currentScreen: gameState.currentScreen,
+        playerId: gameState.playerId 
+    });
+}
 
 socket.on('comprehension-received', (data) => {
     if (data.success) {
