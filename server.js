@@ -332,7 +332,14 @@ class GameRoom {
 
     broadcast(event, data) {
         this.players.forEach(player => {
-            player.socket.emit(event, data);
+            // Only send to connected players
+            if (player.socket && !this.disconnectedPlayers.has(player.id)) {
+                try {
+                    player.socket.emit(event, data);
+                } catch (err) {
+                    console.log(`❌ Failed to broadcast to player ${player.id.substring(0, 8)}: ${err.message}`);
+                }
+            }
         });
     }
 
@@ -427,37 +434,37 @@ io.on('connection', (socket) => {
                 socket.join(room.id);
                 players.set(socket.id, { playerId, roomId: room.id });
                 
-                // Get player's current state (default to room status if no specific state)
+                // Get player's current state and synchronize with room progression
                 let currentState = room.getPlayerState(playerId);
-                if (!currentState || currentState === 'waiting') {
-                    // Map room status to appropriate player state
-                    switch (room.status) {
-                        case 'waiting':
-                            currentState = 'waiting';
-                            break;
-                        case 'consent':
-                            currentState = 'consent';
-                            break;
-                        case 'demographics':
-                            currentState = 'demographics';
-                            break;
-                        case 'instructions':
-                            currentState = 'instructions';
-                            break;
-                        case 'playing':
-                            currentState = 'contribution';
-                            break;
-                        case 'comprehension':
-                            currentState = 'comprehension';
-                            break;
-                        case 'results':
-                            currentState = 'results';
-                            break;
-                        default:
-                            currentState = 'waiting';
-                    }
-                    room.updatePlayerState(playerId, currentState);
+                
+                // Determine correct state based on player's actual progression and room status
+                const hasContributed = room.contributions.has(playerId);
+                const hasAnsweredComprehension = room.comprehensionCompleted.has(playerId);
+                
+                // Sync player state with their actual progression
+                if (room.status === 'results' && hasAnsweredComprehension) {
+                    currentState = 'results';
+                } else if (room.status === 'comprehension' && hasContributed) {
+                    currentState = 'comprehension';
+                } else if (room.status === 'comprehension' && !hasContributed) {
+                    currentState = 'contribution'; // Player hasn't contributed yet
+                } else if (room.status === 'playing' && hasContributed) {
+                    currentState = 'waiting-others'; // Player contributed but waiting for others
+                } else if (room.status === 'playing') {
+                    currentState = 'contribution';
+                } else if (room.status === 'instructions') {
+                    currentState = 'instructions';
+                } else if (room.status === 'demographics') {
+                    currentState = 'demographics';
+                } else if (room.status === 'consent') {
+                    currentState = 'consent';
+                } else {
+                    currentState = 'waiting';
                 }
+                
+                room.updatePlayerState(playerId, currentState);
+                
+                console.log(`🔄 Player ${playerId.substring(0, 8)} reconnected: hasContributed=${hasContributed}, hasAnsweredComprehension=${hasAnsweredComprehension}, roomStatus=${room.status}, assignedState=${currentState}`);
                 
                 const playerNumber = room.players.findIndex(p => p.id === playerId) + 1;
                 
@@ -481,6 +488,41 @@ io.on('connection', (socket) => {
                         comprehension: room.comprehensionAnswers.get(playerId)
                     }
                 });
+                
+                // Send specific phase transition event to ensure player gets to correct screen
+                setTimeout(() => {
+                    if (currentState === 'comprehension') {
+                        socket.emit('start-comprehension-phase', {});
+                        console.log(`📬 Sent missed comprehension phase transition to player ${playerId.substring(0, 8)}`);
+                    } else if (currentState === 'results') {
+                        // Send results data if player missed the results phase
+                        const payoffs = room.calculatePayoffs();
+                        const playerPayoff = payoffs.get(playerId);
+                        const allContributions = Array.from(room.contributions.values());
+                        
+                        socket.emit('game-results', {
+                            yourContribution: playerPayoff.contribution,
+                            yourKept: playerPayoff.kept,
+                            yourShare: playerPayoff.equalShare,
+                            yourCreditsWon: playerPayoff.creditsWon,
+                            yourLotteryTickets: playerPayoff.lotteryTickets,
+                            allContributions: allContributions,
+                            totalPool: allContributions.reduce((sum, c) => sum + c, 0) * 2
+                        });
+                        console.log(`📬 Sent missed results data to player ${playerId.substring(0, 8)}`);
+                    } else if (currentState === 'instructions') {
+                        socket.emit('start-instructions-phase', {});
+                        console.log(`📬 Sent missed instructions phase transition to player ${playerId.substring(0, 8)}`);
+                    } else if (currentState === 'contribution') {
+                        const condition = room.conditions.get(playerId);
+                        socket.emit('start-contribution-phase', { 
+                            condition: condition,
+                            timeLimit: condition === 'time_pressure' ? 10 : null,
+                            minTime: condition === 'time_delay' ? 10 : null
+                        });
+                        console.log(`📬 Sent missed contribution phase transition to player ${playerId.substring(0, 8)}`);
+                    }
+                }, 500); // Small delay to ensure reconnection is processed first
                 
                 // Notify other connected players about reconnection
                 room.players.forEach(player => {
@@ -767,7 +809,15 @@ io.on('connection', (socket) => {
                                 room.status = 'comprehension';
                                 room.players.forEach(p => room.updatePlayerState(p.id, 'comprehension'));
                                 setTimeout(() => {
+                                    console.log(`📢 Transitioning room ${room.id.substring(0, 8)} to comprehension phase (auto-timeout)`);
                                     room.broadcast('start-comprehension-phase', {});
+                                    
+                                    // Additional safeguard: Send phase transition to any disconnected players when they reconnect
+                                    room.players.forEach(player => {
+                                        if (room.disconnectedPlayers.has(player.id)) {
+                                            console.log(`📝 Marked player ${player.id.substring(0, 8)} for comprehension phase sync on reconnection`);
+                                        }
+                                    });
                                 }, 1000);
                             }
                         }
@@ -851,7 +901,15 @@ io.on('connection', (socket) => {
             room.status = 'comprehension';
             room.players.forEach(p => room.updatePlayerState(p.id, 'comprehension'));
             setTimeout(() => {
+                console.log(`📢 Transitioning room ${room.id.substring(0, 8)} to comprehension phase`);
                 room.broadcast('start-comprehension-phase', {});
+                
+                // Additional safeguard: Send phase transition to any disconnected players when they reconnect
+                room.players.forEach(player => {
+                    if (room.disconnectedPlayers.has(player.id)) {
+                        console.log(`📝 Marked player ${player.id.substring(0, 8)} for comprehension phase sync on reconnection`);
+                    }
+                });
             }, 1000);
         }
     });
@@ -909,6 +967,7 @@ io.on('connection', (socket) => {
         if (room.allPlayersAnsweredComprehension()) {
             room.status = 'results';
             setTimeout(() => {
+                console.log(`📢 Transitioning room ${room.id.substring(0, 8)} to results phase`);
                 const payoffs = room.calculatePayoffs();
                 
                 // Send results to each player
@@ -917,7 +976,7 @@ io.on('connection', (socket) => {
                     const playerPayoff = payoffs.get(player.id);
                     const allContributions = Array.from(room.contributions.values());
                     
-                    player.socket.emit('game-results', {
+                    const resultsData = {
                         yourContribution: playerPayoff.contribution,
                         yourKept: playerPayoff.kept,
                         yourShare: playerPayoff.equalShare,
@@ -925,7 +984,14 @@ io.on('connection', (socket) => {
                         yourLotteryTickets: playerPayoff.lotteryTickets,
                         allContributions: allContributions,
                         totalPool: allContributions.reduce((sum, c) => sum + c, 0) * 2
-                    });
+                    };
+                    
+                    // Send to connected players
+                    if (!room.disconnectedPlayers.has(player.id)) {
+                        player.socket.emit('game-results', resultsData);
+                    } else {
+                        console.log(`📝 Marked player ${player.id.substring(0, 8)} for results phase sync on reconnection`);
+                    }
                 });
 
                 // Save session data to database
