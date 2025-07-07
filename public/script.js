@@ -11,6 +11,8 @@ let gameState = {
     decisionStartTime: null,
     countdownInterval: null,
     waitTimerInterval: null,
+    contributionReceivedTimeout: null,
+    autoContributionTimeout: null,
     consentCompleted: false,
     demographicsCompleted: false,
     isReconnected: false
@@ -61,6 +63,14 @@ function showScreen(screenName) {
     if (gameState.waitTimerInterval) {
         clearInterval(gameState.waitTimerInterval);
         gameState.waitTimerInterval = null;
+    }
+    if (gameState.contributionReceivedTimeout) {
+        clearTimeout(gameState.contributionReceivedTimeout);
+        gameState.contributionReceivedTimeout = null;
+    }
+    if (gameState.autoContributionTimeout) {
+        clearTimeout(gameState.autoContributionTimeout);
+        gameState.autoContributionTimeout = null;
     }
 
     // Reset contribution slider when showing contribution screen
@@ -228,10 +238,19 @@ socket.on('contribution-received', (data) => {
     submitBtn.textContent = 'Gönderildi ✓';
     submitBtn.disabled = true;
     
-    // Show waiting message
-    setTimeout(() => {
-        showScreen('waitingOthers');
+    // Show waiting message - but only if we haven't moved to comprehension already
+    const waitingTimeout = setTimeout(() => {
+        // Only transition to waiting if we're still in contribution phase
+        if (gameState.currentScreen === 'contribution') {
+            console.log('🔄 Delayed transition to waiting screen (contribution-received)');
+            showScreen('waitingOthers');
+        } else {
+            console.log('🚫 Skipping delayed transition to waiting - already in', gameState.currentScreen);
+        }
     }, 1000);
+    
+    // Store timeout reference so we can cancel it if needed
+    gameState.contributionReceivedTimeout = waitingTimeout;
 });
 
 socket.on('contribution-auto-submitted', (data) => {
@@ -263,10 +282,19 @@ socket.on('contribution-auto-submitted', (data) => {
     
     console.log('Contribution auto-submitted by server:', data);
     
-    // Show waiting message
-    setTimeout(() => {
-        showScreen('waitingOthers');
+    // Show waiting message - but only if we haven't moved to comprehension already
+    const autoWaitingTimeout = setTimeout(() => {
+        // Only transition to waiting if we're still in contribution phase
+        if (gameState.currentScreen === 'contribution') {
+            console.log('🔄 Delayed transition to waiting screen (auto-submitted)');
+            showScreen('waitingOthers');
+        } else {
+            console.log('🚫 Skipping delayed auto-transition to waiting - already in', gameState.currentScreen);
+        }
     }, 2000);
+    
+    // Store timeout reference so we can cancel it if needed
+    gameState.autoContributionTimeout = autoWaitingTimeout;
 });
 
 socket.on('contribution-rejected', (data) => {
@@ -301,6 +329,19 @@ socket.on('waiting-for-others', (data) => {
 
 socket.on('start-comprehension-phase', () => {
     console.log('📢 Received start-comprehension-phase event');
+    
+    // Clear any pending contribution-related timeouts that might override comprehension
+    if (gameState.contributionReceivedTimeout) {
+        clearTimeout(gameState.contributionReceivedTimeout);
+        gameState.contributionReceivedTimeout = null;
+        console.log('🚫 Cleared pending contribution-received timeout');
+    }
+    if (gameState.autoContributionTimeout) {
+        clearTimeout(gameState.autoContributionTimeout);
+        gameState.autoContributionTimeout = null;
+        console.log('🚫 Cleared pending auto-contribution timeout');
+    }
+    
     showScreen('comprehension');
 });
 
